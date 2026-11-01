@@ -13,6 +13,13 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Choisir la dernière version de l'application
+        run: |
+          f=$(ls www/app_v*.html 2>/dev/null | sort -V | tail -1)
+          if [ -n "$f" ]; then cp "$f" www/index.html; echo "Version utilisée : $f"; fi
+          rm -f www/app_v*.html
+          find www -maxdepth 1 -name 'index (*).html' -delete
+          grep -o "__ANDROID_APP = [0-9]*" www/index.html || true
       - run: npm install
       - run: npx cap add android
       - name: Icône de l'application
