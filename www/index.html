@@ -93,6 +93,47 @@ function dlBoxInit(){
     box.style.display = '';
   }catch(e){}
 }
+
+// --- Application Android (Capacitor) : un téléchargement par lien « blob » n'enregistre rien dans une WebView.
+// On écrit donc le fichier sur le téléphone puis on ouvre la fenêtre de partage Android (enregistrer dans Fichiers/Drive, ouvrir avec un lecteur PDF/Excel, WhatsApp…).
+(function(){
+  try{
+    var C = window.Capacitor; if(!C) return;
+    var native = false; try{ native = (typeof C.isNativePlatform === 'function') ? !!C.isNativePlatform() : (typeof C.getPlatform === 'function' && C.getPlatform() !== 'web'); }catch(e){}
+    if(!native && /; wv\)/.test(navigator.userAgent||'') && C.nativePromise) native = true;
+    if(!native) return;
+    function plug(name){
+      var P = C.Plugins && C.Plugins[name]; if(P) return P;
+      if(typeof C.nativePromise === 'function') return new Proxy({}, { get: function(t, m){ return function(o){ return C.nativePromise(name, m, o || {}); }; } });
+      return null;
+    }
+    window.__ANDROID_APP = 3;
+    window.addEventListener('load', function(){ setTimeout(function(){ try{ toast('Application Android v3', 'ok', 2500); }catch(e){} }, 1500); });
+    function toB64(blob){ return new Promise(function(res, rej){ var r = new FileReader(); r.onload = function(){ res(String(r.result).split(',')[1] || ''); }; r.onerror = rej; r.readAsDataURL(blob); }); }
+    async function deliver(href, rawName){
+      var name = String(rawName || 'fichier').replace(/[\\\/:*?"<>|]+/g, '_') || 'fichier';
+      try{
+        try{ toast('Préparation du fichier ' + name + '…', '', 2500); }catch(e){}
+        var FS = plug('Filesystem'), SH = plug('Share'); if(!FS || !SH) throw new Error('modules fichiers indisponibles');
+        var blob = await (await fetch(href)).blob();
+        var data = await toB64(blob);
+        var w = await FS.writeFile({ path: name, data: data, directory: 'CACHE', recursive: true });
+        try{ toast('Fichier prêt : ' + name + ' — choisissez où l\'enregistrer ou l\'ouvrir', 'ok', 6000); }catch(e){}
+        await SH.share({ title: name, dialogTitle: 'Enregistrer ou ouvrir ' + name, files: [w.uri] });
+      }catch(e){
+        var m = String((e && (e.message || e.errorMessage)) || e);
+        if(/cancel|dismiss/i.test(m)) return;
+        try{ toast('Impossible d\'enregistrer le fichier : ' + m, 'err', 9000); }catch(x){}
+      }
+    }
+    function isDl(a){ return a && a.tagName === 'A' && a.hasAttribute('download') && /^(blob:|data:)/.test(a.href || ''); }
+    var oc = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function(){ if(isDl(this)){ deliver(this.href, this.getAttribute('download')); return; } return oc.apply(this, arguments); };
+    var od = HTMLAnchorElement.prototype.dispatchEvent;
+    HTMLAnchorElement.prototype.dispatchEvent = function(ev){ if(ev && ev.type === 'click' && isDl(this)){ deliver(this.href, this.getAttribute('download')); return true; } return od.apply(this, arguments); };
+    document.addEventListener('click', function(ev){ var a = ev.target && ev.target.closest ? ev.target.closest('a[download]') : null; if(isDl(a)){ ev.preventDefault(); deliver(a.href, a.getAttribute('download')); } }, true);
+  }catch(e){}
+})();
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(()=>{}); try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){} });
 }
