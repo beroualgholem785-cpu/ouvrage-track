@@ -1,0 +1,6 @@
+{
+  "appId": "com.ouvragetrack.app",
+  "appName": "Ouvrage Track",
+  "webDir": "www",
+  "server": { "androidScheme": "https" }
+}
