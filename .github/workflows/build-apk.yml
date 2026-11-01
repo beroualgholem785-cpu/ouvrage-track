@@ -15,6 +15,16 @@ jobs:
           java-version: 17
       - run: npm install
       - run: npx cap add android
+      - name: Icône de l'application
+        run: |
+          R=android/app/src/main/res
+          for d in mdpi:48:108 hdpi:72:162 xhdpi:96:216 xxhdpi:144:324 xxxhdpi:192:432; do
+            n=$(echo $d | cut -d: -f1); s=$(echo $d | cut -d: -f2); f=$(echo $d | cut -d: -f3); i=$((f*60/100))
+            convert www/icons/icon-512.png -resize ${s}x${s} $R/mipmap-$n/ic_launcher.png
+            convert www/icons/icon-512.png -resize ${s}x${s} $R/mipmap-$n/ic_launcher_round.png
+            convert www/icons/icon-512.png -resize ${i}x${i} -background none -gravity center -extent ${f}x${f} $R/mipmap-$n/ic_launcher_foreground.png
+          done
+          echo '<?xml version="1.0" encoding="utf-8"?><resources><color name="ic_launcher_background">#FFFFFF</color></resources>' > $R/values/ic_launcher_background.xml
       - run: npx cap sync android
       - name: Compiler
         working-directory: android
