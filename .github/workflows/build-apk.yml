@@ -35,7 +35,7 @@ jobs:
               img = src.resize((s, s), Image.LANCZOS)
               img.save(R + 'mipmap-' + n + '/ic_launcher.png')
               img.save(R + 'mipmap-' + n + '/ic_launcher_round.png')
-              i = f * 60 
+              i = f 
               fg = Image.new('RGBA', (f, f), (0, 0, 0, 0))
               fg.paste(src.resize((i, i), Image.LANCZOS), ((f - i) // 2, (f - i) // 2))
               fg.save(R + 'mipmap-' + n + '/ic_launcher_foreground.png')
