@@ -12815,6 +12815,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   .drop .lbl{font-weight:600; font-size:0.88rem; margin-bottom:4px;}
   .drop .name{font-size:0.82rem; color:var(--ink-soft); word-break:break-all;}
   .drop .name.set{color:var(--accent-dark); font-weight:600;}
+  .drop .file-clear{position:absolute; top:6px; right:6px; z-index:2; width:22px; height:22px; border-radius:50%; border:none; background:#fff; color:var(--ink-soft); font-size:0.75rem; line-height:1; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.2); display:none; align-items:center; justify-content:center; padding:0;}
+  .drop .file-clear.show{display:flex;}
 
   button{
     font-family:var(--sans); font-size:0.88rem; font-weight:600; border:none; border-radius:7px;
@@ -13000,11 +13002,13 @@ label{font-size:11px}
     <div class="drop-row">
       <label class="drop" id="dropBpu">
         <input type="file" id="fileBpu" accept=".xlsx,.xls,.pdf,.docx,.doc">
+        <button type="button" class="file-clear" id="clearBpu" title="Retirer ce fichier">✕</button>
         <div class="lbl" id="lblBpu">Bordereau des Prix Unitaires (BPU)</div>
         <div class="name" id="nameBpu">Glisser un fichier .xlsx, .pdf ou .docx (PDF/Word nécessite une clé IA)</div>
       </label>
       <label class="drop" id="dropDqe">
         <input type="file" id="fileDqe" accept=".xlsx,.xls,.pdf,.docx,.doc">
+        <button type="button" class="file-clear" id="clearDqe" title="Retirer ce fichier">✕</button>
         <div class="lbl">Devis Quantitatif et Estimatif (DQE)</div>
         <div class="name" id="nameDqe">Glisser un fichier .xlsx, .pdf ou .docx (PDF/Word nécessite une clé IA)</div>
       </label>
@@ -14986,19 +14990,35 @@ label{font-size:11px}
     return cfg;
   }
 
-  function bindDrop(dropId, inputId, nameId, onFile){
+  function bindDrop(dropId, inputId, nameId, clearId, onFile){
     const drop = document.getElementById(dropId);
     const input = document.getElementById(inputId);
     const nameEl = document.getElementById(nameId);
+    const clearBtn = clearId ? document.getElementById(clearId) : null;
+    const placeholder = nameEl.textContent;
+    function setFile(f){
+      onFile(f); nameEl.textContent = f.name; nameEl.classList.add('set');
+      if (clearBtn) clearBtn.classList.add('show');
+    }
     input.addEventListener('change', () => {
-      if (input.files[0]){ onFile(input.files[0]); nameEl.textContent = input.files[0].name; nameEl.classList.add('set'); }
+      if (input.files[0]) setFile(input.files[0]);
     });
     ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
     ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
     drop.addEventListener('drop', e => {
       const f = e.dataTransfer.files[0];
-      if (f){ input.files = e.dataTransfer.files; onFile(f); nameEl.textContent = f.name; nameEl.classList.add('set'); }
+      if (f){ input.files = e.dataTransfer.files; setFile(f); }
     });
+    if (clearBtn){
+      clearBtn.addEventListener('click', e => {
+        e.preventDefault(); e.stopPropagation();
+        input.value = '';
+        nameEl.textContent = placeholder;
+        nameEl.classList.remove('set');
+        clearBtn.classList.remove('show');
+        onFile(null);
+      });
+    }
   }
 
   function checkReady(){
@@ -15023,12 +15043,12 @@ label{font-size:11px}
   }
   optSingleFile.addEventListener('change', applySingleFileMode);
 
-  bindDrop('dropBpu','fileBpu','nameBpu', f => {
-    bpuFile = f; bpuFileName = f.name;
-    if (optSingleFile.checked){ dqeFile = f; dqeFileName = f.name; }
+  bindDrop('dropBpu','fileBpu','nameBpu','clearBpu', f => {
+    bpuFile = f; bpuFileName = f ? f.name : '';
+    if (optSingleFile.checked){ dqeFile = f; dqeFileName = f ? f.name : ''; }
     checkReady(); try { saveDraftFiles(); } catch(e){}
   });
-  bindDrop('dropDqe','fileDqe','nameDqe', f => { dqeFile = f; dqeFileName = f.name; checkReady(); try { saveDraftFiles(); } catch(e){} });
+  bindDrop('dropDqe','fileDqe','nameDqe','clearDqe', f => { dqeFile = f; dqeFileName = f ? f.name : ''; checkReady(); try { saveDraftFiles(); } catch(e){} });
 
   document.getElementById('btnLoad').addEventListener('click', async () => {
     const msg = document.getElementById('analyzeMsg');
