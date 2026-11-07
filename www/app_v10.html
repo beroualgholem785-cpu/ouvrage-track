@@ -2064,6 +2064,10 @@ let CURRENT_PROJECT = null;
 let CURRENT_ROLE = null;
 let SELECTED_ROLE = null;
 let PAGE = 'dashboard';
+// Permet à l'outil BPU/DQE (chargé dans un iframe) de savoir quel projet est
+// ouvert, pour que chaque projet garde ses propres fichiers/travaux enregistrés
+// au lieu de partager les mêmes avec tous les autres projets.
+window.__otProjectId = function(){ return CURRENT_PROJECT ? CURRENT_PROJECT.id : null; };
 let PRINT_OPTION = 'dashboard';
 let CURRENT_VIEW_PHOTO = null;
 let EDIT_TC_INDEX = null;
@@ -9792,6 +9796,7 @@ function importBPUDQEData(d){
 
 // ── BPU / DQE intégré (iframe persistante) ──────────────────
 let _bpuLoaded=false;
+let _bpuLastProj=null;
 function bpuHostSync(){
   const host=document.getElementById('bpu-host'), app=document.getElementById('app');
   if(!host||!app) return;
@@ -9800,12 +9805,26 @@ function bpuHostSync(){
   app.style.display=on?'none':'';
   if(on && !_bpuLoaded){
     _bpuLoaded=true;
+    _bpuLastProj = window.__otProjectId ? window.__otProjectId() : null;
     const src=document.getElementById('bpu-src').textContent.replace(/<\\\/script/g,'</script').replace(/<\\!--/g,'<!--');
     const fr=document.createElement('iframe');
     fr.id='bpu-frame'; fr.style.cssText='width:100%;height:100%;border:0;border-radius:8px;background:#fff';
     fr.srcdoc=src;
     fr.addEventListener('load', function(){ try{ if(window.__otPatchWin) window.__otPatchWin(fr.contentWindow); }catch(e){} });
     host.appendChild(fr);
+  } else if(on && _bpuLoaded){
+    // L'iframe du BPU/DQE n'est créée qu'une seule fois par session : si l'utilisateur
+    // change de projet puis rouvre cet outil, on prévient l'iframe pour qu'elle
+    // réaffiche les fichiers/travaux enregistrés du NOUVEAU projet (et plus ceux
+    // de l'ancien) sans recharger toute la page.
+    const curProj = window.__otProjectId ? window.__otProjectId() : null;
+    if(curProj !== _bpuLastProj){
+      _bpuLastProj = curProj;
+      try{
+        const fr=document.getElementById('bpu-frame');
+        if(fr && fr.contentWindow) fr.contentWindow.postMessage({type:'ot-project-changed'}, '*');
+      }catch(e){}
+    }
   }
 }
 window.addEventListener('message',function(e){
@@ -16727,14 +16746,23 @@ label{font-size:11px}
     return bytes.buffer;
   }
 
-  const SESS_INDEX_KEY = 'bpuSess_index', SESS_PREFIX = 'bpuSess_';
   const PAR = (function(){ try { return (window.parent && window.parent !== window && typeof window.parent._sSet === 'function') ? window.parent : null; } catch(e){ return null; } })();
+  // Chaque projet garde ses propres travaux/fichiers BPU-DQE enregistrés : on
+  // ajoute l'identifiant du projet ouvert (fourni par la page principale) aux
+  // clés de sauvegarde, pour ne jamais mélanger les travaux de deux projets.
+  // L'iframe reste ouverte toute la session (elle n'est créée qu'une fois), donc
+  // ce repère doit être recalculé à chaque utilisation plutôt que figé une fois
+  // pour toutes — sinon un changement de projet en cours de session ne serait
+  // jamais pris en compte.
+  function otProj(){ try { return (window.parent && typeof window.parent.__otProjectId === 'function' && window.parent.__otProjectId()) || 'commun'; } catch(e){ return 'commun'; } }
+  function sessIndexKey(){ return 'bpuSess_index_' + otProj(); }
+  function sessPrefix(){ return 'bpuSess_' + otProj() + '_'; }
   function stGet(k){ try { if (PAR) return PAR._sGet(k); } catch(e){} try { return localStorage.getItem(k); } catch(e){ return null; } }
   function stSet(k, v){ try { if (PAR){ PAR._sSet(k, v); return; } } catch(e){} localStorage.setItem(k, v); }
   function stDel(k){ try { if (PAR){ PAR._sDel(k); return; } } catch(e){} try { localStorage.removeItem(k); } catch(e){} }
-  function sessIndex(){ try { return JSON.parse(stGet(SESS_INDEX_KEY) || '[]') || []; } catch(e){ return []; } }
-  function setSessIndex(a){ stSet(SESS_INDEX_KEY, JSON.stringify(a)); }
-  function sessLoad(id){ try { const r = stGet(SESS_PREFIX + id); return r ? JSON.parse(r) : null; } catch(e){ return null; } }
+  function sessIndex(){ try { return JSON.parse(stGet(sessIndexKey()) || '[]') || []; } catch(e){ return []; } }
+  function setSessIndex(a){ stSet(sessIndexKey(), JSON.stringify(a)); }
+  function sessLoad(id){ try { const r = stGet(sessPrefix() + id); return r ? JSON.parse(r) : null; } catch(e){ return null; } }
   function escH(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
   let curSessId = null, curSessKey = '', lastSig = '', sessBusy = false;
@@ -16797,7 +16825,7 @@ label{font-size:11px}
       const payload = await buildSessionPayload();
       const old = idx.find(x => x.id === curSessId);
       payload.id = curSessId; payload.name = (old && old.name) || defaultSessName(); payload.status = (old && old.status) || 'encours';
-      stSet(SESS_PREFIX + curSessId, JSON.stringify(payload));
+      stSet(sessPrefix() + curSessId, JSON.stringify(payload));
       const entry = { id: curSessId, name: payload.name, status: payload.status, savedAt: payload.savedAt,
         bpuFileName: payload.bpuFileName, dqeFileName: payload.dqeFileName, nb: (results || []).length };
       const n = idx.findIndex(x => x.id === curSessId);
@@ -16825,7 +16853,7 @@ label{font-size:11px}
   window.addEventListener('pagehide', autoSaveTick);
 
   function deleteSessionById(id){
-    stDel(SESS_PREFIX + id);
+    stDel(sessPrefix() + id);
     setSessIndex(sessIndex().filter(x => x.id !== id));
     if (id === curSessId){ curSessId = null; curSessKey = ''; }
     renderSessions();
@@ -16833,7 +16861,7 @@ label{font-size:11px}
   function setSessStatus(id, status){
     const idx = sessIndex(); const e = idx.find(x => x.id === id); if (!e) return;
     e.status = status; setSessIndex(idx);
-    const p = sessLoad(id); if (p){ p.status = status; stSet(SESS_PREFIX + id, JSON.stringify(p)); }
+    const p = sessLoad(id); if (p){ p.status = status; stSet(sessPrefix() + id, JSON.stringify(p)); }
     renderSessions();
   }
   function renameSess(id){
@@ -16841,7 +16869,7 @@ label{font-size:11px}
     const nn = prompt('Nom du travail :', e.name || '');
     if (nn === null) return;
     e.name = nn.trim() || e.name; setSessIndex(idx);
-    const p = sessLoad(id); if (p){ p.name = e.name; stSet(SESS_PREFIX + id, JSON.stringify(p)); }
+    const p = sessLoad(id); if (p){ p.name = e.name; stSet(sessPrefix() + id, JSON.stringify(p)); }
     renderSessions();
   }
 
@@ -16930,7 +16958,7 @@ label{font-size:11px}
   }
 
   // ---- Fichiers déposés (brouillon) : conservés dès le dépôt, même avant « Analyser » ----
-  const DRAFT_KEY = 'bpuDraftFiles';
+  function draftKey(){ return 'bpuDraftFiles_' + otProj(); }
   function dlBlob(name, type, b64){
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([base64ToAb(b64)], { type: type || 'application/octet-stream' }));
@@ -16943,10 +16971,10 @@ label{font-size:11px}
     const d = { savedAt: new Date().toISOString(), single: !!(dqeFile && dqeFile === bpuFile) };
     d.bpu = await packFile(bpuFile);
     if (dqeFile && dqeFile !== bpuFile) d.dqe = await packFile(dqeFile);
-    stSet(DRAFT_KEY, JSON.stringify(d));
+    stSet(draftKey(), JSON.stringify(d));
     renderSessions();
   }
-  function draftLoad(){ try { const r = stGet(DRAFT_KEY); return r ? JSON.parse(r) : null; } catch(e){ return null; } }
+  function draftLoad(){ try { const r = stGet(draftKey()); return r ? JSON.parse(r) : null; } catch(e){ return null; } }
   function useDraft(){
     const d = draftLoad(); if (!d) return;
     const mk = o => o ? new File([base64ToAb(o.b64)], o.name, { type: o.type }) : null;
@@ -16976,7 +17004,7 @@ label{font-size:11px}
   function renderSessions(){
     const box = document.getElementById('stepRestore');
     const idx = sessIndex();
-    if (!idx.length && !draftLoad()){ box.classList.add('hidden'); return; }
+    if (!idx.length && !draftLoad()){ box.classList.add('hidden'); box.innerHTML = ''; return; }
     const fmt = s => new Date(s).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const row = e => {
       const done = e.status === 'termine';
@@ -16995,7 +17023,6 @@ label{font-size:11px}
         '</div></div>';
     };
     const enc = idx.filter(e => e.status !== 'termine'), ter = idx.filter(e => e.status === 'termine');
-    box.querySelector('h2').innerHTML = '<span class="num">↺</span>Mes travaux BPU/DQE enregistrés';
     box.innerHTML = '<h2><span class="num">↺</span>Mes travaux BPU/DQE enregistrés</h2>' +
       '<p style="margin:0 0 8px; font-size:0.82rem; color:var(--ink-soft);">Votre travail est enregistré automatiquement. Quittez quand vous voulez : reprenez-le ici, puis marquez-le « Terminé » quand c\'est fini.</p>' +
       '<div id="restoreInfo" style="font-size:.82rem; color:var(--ink-soft);"></div>' + draftBox() +
@@ -17024,6 +17051,31 @@ label{font-size:11px}
   });
 
   function checkSavedSession(){
+    // Migration unique : avant cette version, tous les projets partageaient les
+    // mêmes travaux/fichiers BPU-DQE enregistrés (une seule liste commune). On
+    // récupère cette ancienne liste commune une seule fois, pour le premier
+    // projet ouvert après la mise à jour (pour ne rien perdre), puis on la
+    // supprime pour qu'elle ne réapparaisse plus dans les autres projets.
+    try {
+      const oldIdxRaw = stGet('bpuSess_index');
+      if (oldIdxRaw){
+        const oldIdx = JSON.parse(oldIdxRaw) || [];
+        const idx = sessIndex();
+        oldIdx.forEach(e => {
+          const p = stGet('bpuSess_' + e.id);
+          if (p) stSet(sessPrefix() + e.id, p);
+          idx.push(e);
+        });
+        setSessIndex(idx);
+        oldIdx.forEach(e => { try { stDel('bpuSess_' + e.id); } catch(err){} });
+        try { stDel('bpuSess_index'); } catch(err){}
+      }
+      const oldDraftRaw = stGet('bpuDraftFiles');
+      if (oldDraftRaw && !stGet(draftKey())){
+        stSet(draftKey(), oldDraftRaw);
+        try { stDel('bpuDraftFiles'); } catch(err){}
+      }
+    } catch(e){}
     // Migration de l'ancienne sauvegarde unique (localStorage) vers la liste des travaux
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -17031,7 +17083,7 @@ label{font-size:11px}
         const old = JSON.parse(raw);
         const id = 'legacy' + Date.now().toString(36);
         old.id = id; old.name = (old.bpuFileName || 'Ancien travail').replace(/\.[^.]+$/, ''); old.status = 'encours';
-        stSet(SESS_PREFIX + id, JSON.stringify(old));
+        stSet(sessPrefix() + id, JSON.stringify(old));
         const idx = sessIndex();
         idx.unshift({ id, name: old.name, status: 'encours', savedAt: old.savedAt, bpuFileName: old.bpuFileName, dqeFileName: old.dqeFileName, nb: (old.results || []).length });
         setSessIndex(idx);
@@ -17451,6 +17503,18 @@ label{font-size:11px}
   });
 
   checkSavedSession();
+
+  // Si l'utilisateur change de projet dans l'application principale pendant que
+  // cet outil reste ouvert en arrière-plan, on réaffiche les travaux/fichiers
+  // enregistrés du projet maintenant actif (et on oublie le travail en cours
+  // de l'ancien projet, pour ne pas enregistrer un fichier dans le mauvais projet).
+  window.addEventListener('message', function(ev){
+    const d = ev.data;
+    if (d && d.type === 'ot-project-changed'){
+      curSessId = null; curSessKey = '';
+      try { checkSavedSession(); } catch(e){}
+    }
+  });
 })();
 <\/script>
 </body>
