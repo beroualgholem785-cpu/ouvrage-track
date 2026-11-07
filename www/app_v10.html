@@ -16127,11 +16127,36 @@ label{font-size:11px}
         extra.map(l => `<div style="padding:3px 0; border-bottom:1px dashed var(--line);">${l}</div>`).join('');
     }
 
-    document.getElementById('manualWordArea').innerHTML = html;
+    const wordArea = document.getElementById('manualWordArea');
+    wordArea.innerHTML = html;
+    // Si le style « Manuscrite » est choisi, on l'applique aussi ici (pas
+    // seulement dans le PDF) : la zone d'édition prend tout de suite l'allure
+    // d'une écriture au stylo bleu, pour que ce qui est tapé — et donc ce qui
+    // sera dans le Word final — ressorte manuscrit et non imprimé/numérique.
+    applyWordHandwritingStyle(wordArea);
     document.getElementById('stepManualPlaceWord').classList.remove('hidden');
     document.getElementById('stepManualPlaceWord').scrollIntoView({ behavior: 'smooth' });
     document.getElementById('manualWordMsg').textContent = '';
   }
+
+  function applyWordHandwritingStyle(el){
+    const wantHandwriting = document.getElementById('optHandwriting').value === 'hand';
+    if (wantHandwriting){
+      el.style.fontFamily = "'Segoe Script','Bradley Hand','Comic Sans MS',cursive";
+      el.style.color = '#0f1a8c'; // bleu stylo, comme pour le PDF manuscrit
+      el.style.fontSize = '17px';
+    } else {
+      el.style.fontFamily = "'Times New Roman',serif";
+      el.style.color = '';
+      el.style.fontSize = '14px';
+    }
+  }
+  document.getElementById('optHandwriting').addEventListener('change', () => {
+    const wordArea = document.getElementById('manualWordArea');
+    if (wordArea && !document.getElementById('stepManualPlaceWord').classList.contains('hidden')){
+      applyWordHandwritingStyle(wordArea);
+    }
+  });
 
   function buildWordDocHtml(bodyHtml, title){
     return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>` +
@@ -16142,7 +16167,14 @@ label{font-size:11px}
 
   document.getElementById('btnManualWordFinish').addEventListener('click', () => {
     try {
-      const html = document.getElementById('manualWordArea').innerHTML;
+      let html = document.getElementById('manualWordArea').innerHTML;
+      // innerHTML ne reprend pas le style posé sur la zone d'édition elle-même
+      // (manualWordArea) : on l'applique donc explicitement ici au contenu
+      // exporté, pour que le Word téléchargé garde bien l'allure manuscrite
+      // choisie (et pas seulement l'aperçu affiché à l'écran).
+      if (document.getElementById('optHandwriting').value === 'hand'){
+        html = '<div style="font-family:\'Segoe Script\',\'Bradley Hand\',\'Comic Sans MS\',cursive; color:#0f1a8c; font-size:14pt;">' + html + '</div>';
+      }
       const doc = buildWordDocHtml(html, 'Document rempli');
       const blob = new Blob(['\ufeff', doc], { type: 'application/msword' });
       const baseName = (manualWordKind === 'bpu' ? bpuFileName : dqeFileName) || 'document';
