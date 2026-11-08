@@ -14741,6 +14741,76 @@ label{font-size:11px}
     return chunks;
   }
 
+  // Un gros cahier des charges Word (des centaines de lignes de tableau) pose
+  // le même problème qu'un PDF volumineux : la réponse JSON attendue (qui
+  // recopie chaque désignation en entier) devient trop longue pour un seul
+  // appel et revient tronquée/invalide ("Réponse IA illisible"). Au-delà de
+  // ce seuil de caractères, on découpe la zone utile en plusieurs morceaux —
+  // sur les frontières de <table> (un tableau = en général un lot/corps
+  // d'état), jamais au milieu d'un tableau — avant de l'envoyer à Gemini.
+  const DOCX_CHUNK_CHAR_THRESHOLD = 150000;
+  const DOCX_CHUNK_MAX_CHARS = 90000;
+
+  // Un même document Word peut regrouper TOUS ses lots dans un seul et même
+  // <table> HTML (Mammoth ne crée pas forcément un tableau distinct par lot) —
+  // dans ce cas, découper sur les frontières de <table> ne donne qu'un seul
+  // morceau, toujours trop gros. On redécoupe alors ce tableau unique ligne
+  // par ligne (<tr>), jamais au milieu d'une ligne, en répétant la première
+  // ligne (généralement l'en-tête des colonnes) dans chaque morceau pour que
+  // l'IA garde le sens des colonnes sans avoir à la revoir en entier.
+  function splitTableRows(tableHtml, maxChars){
+    const openTagMatch = tableHtml.match(/^<table[^>]*>/i);
+    const openTag = openTagMatch ? openTagMatch[0] : '<table>';
+    const rows = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+    if (rows.length <= 1) return [tableHtml]; // une seule ligne : rien à découper
+    const headerRow = rows[0];
+    const chunks = [];
+    let cur = [], curLen = openTag.length + headerRow.length + 8;
+    for (let i = 1; i < rows.length; i++){
+      const r = rows[i];
+      if (cur.length && curLen + r.length > maxChars){
+        chunks.push(openTag + headerRow + cur.join('') + '</table>');
+        cur = []; curLen = openTag.length + headerRow.length + 8;
+      }
+      cur.push(r); curLen += r.length;
+    }
+    if (cur.length) chunks.push(openTag + headerRow + cur.join('') + '</table>');
+    return chunks;
+  }
+
+  function splitHtmlIntoChunks(html, maxChars){
+    const tableRe = /<table[\s\S]*?<\/table>/gi;
+    const pieces = [];
+    let lastIndex = 0, m;
+    while ((m = tableRe.exec(html))){
+      if (m.index > lastIndex) pieces.push(html.slice(lastIndex, m.index));
+      pieces.push(m[0]);
+      lastIndex = tableRe.lastIndex;
+    }
+    if (lastIndex < html.length) pieces.push(html.slice(lastIndex));
+    // Pas de <table> repéré : on ne sait pas où couper sans risquer de couper
+    // une ligne en deux — on renvoie le texte tel quel (pas de découpage).
+    if (!pieces.some(p => /<table/i.test(p))) return [html];
+    const chunks = [];
+    let cur = '';
+    const flush = () => { if (cur){ chunks.push(cur); cur = ''; } };
+    for (const p of pieces){
+      if (!p.replace(/<[^>]+>/g, '').trim()) continue; // texte vide entre deux tableaux
+      if (/<table/i.test(p) && p.length > maxChars){
+        // Un seul tableau dépasse déjà la limite à lui seul (souvent : tous
+        // les lots regroupés dans un même tableau) : on le redécoupe ligne
+        // par ligne plutôt que de l'envoyer entier d'un bloc.
+        flush();
+        splitTableRows(p, maxChars).forEach(sub => chunks.push(sub));
+        continue;
+      }
+      if (cur && (cur.length + p.length > maxChars)){ flush(); }
+      cur += p;
+    }
+    flush();
+    return chunks;
+  }
+
   async function buildContentParts(file, kind){
     const ext = fileExt(file.name);
     if (ext === 'pdf'){
@@ -14753,7 +14823,7 @@ label{font-size:11px}
     const section = sliceRelevantSection(html, kind);
     const sendText = section || html.slice(0, MAX_SECTION_CHARS);
     const cover = section ? [{ text: 'Début du document (page de garde, pour les informations du projet) :\n' + plain.replace(/\s+/g, ' ').slice(0, 3000) + '\n\nTableau :\n' }] : [];
-    return { parts: [...cover, { text: sendText }], located: !!section };
+    return { parts: [...cover, { text: sendText }], located: !!section, docxSection: sendText, docxCoverText: plain };
   }
 
   function sameFile(a, b){
@@ -14777,7 +14847,10 @@ label{font-size:11px}
       }
     }
     const prompt = geminiPromptFor(kind);
-    const { parts: contentParts, located } = await buildContentParts(file, kind);
+    const { parts: contentParts, located, docxSection, docxCoverText } = await buildContentParts(file, kind);
+    if (ext !== 'pdf' && docxSection && docxSection.length > DOCX_CHUNK_CHAR_THRESHOLD){
+      return await geminiExtractItemsChunkedDocx(docxSection, docxCoverText, kind, located, progressCb);
+    }
     const contextNote = located
       ? `Extrait du document (zone repérée par titre) :`
       : `Le document est long et son titre de section n'a pas pu être repéré automatiquement : voici son début (peut être incomplet si le tableau est plus loin) :`;
@@ -14789,6 +14862,62 @@ label{font-size:11px}
     progFrac(1);
     if (!result || !Array.isArray(result.items)) throw new Error('Format inattendu renvoyé par l\'IA.');
     return { operation: result.operation || null, lot: result.lot || null, projet: result.projet || null, items: result.items };
+  }
+
+  // Même principe que geminiExtractItemsChunked (PDF), mais pour un gros
+  // document Word : on découpe la zone utile (déjà repérée par titre) en
+  // plusieurs morceaux sur les frontières de <table>, on envoie chaque
+  // morceau séparément à Gemini, puis on recolle les articles trouvés dans
+  // l'ordre d'origine.
+  async function geminiExtractItemsChunkedDocx(section, coverText, kind, located, progressCb){
+    const chunks = splitHtmlIntoChunks(section, DOCX_CHUNK_MAX_CHARS);
+    const prompt = geminiPromptFor(kind);
+    const onRetry = makeOnRetry(progressCb);
+    const CONCURRENCY = 3;
+    const results = new Array(chunks.length).fill(null);
+    let next = 0, done = 0, firstErr = null;
+    const startT = new Array(chunks.length).fill(0), finished = new Array(chunks.length).fill(false);
+    const CHUNK_EXPECTED_MS = 30000;
+    const tick = () => {
+      let sum = 0;
+      for (let k = 0; k < chunks.length; k++){
+        if (finished[k]) sum += 1;
+        else if (startT[k]) sum += 0.9 * (1 - Math.exp(-(Date.now() - startT[k]) / CHUNK_EXPECTED_MS));
+      }
+      progFrac(sum / chunks.length, `Analyse IA ${kind.toUpperCase()} — ${done}/${chunks.length} parties terminées`);
+    };
+    const tickId = setInterval(tick, 400);
+    async function worker(){
+      while (true){
+        const idx = next++;
+        if (idx >= chunks.length) return;
+        startT[idx] = Date.now();
+        const contextNote = located
+          ? `Extrait du document (zone repérée par titre), partie ${idx + 1}/${chunks.length} — le document est trop long pour être envoyé d'un bloc, n'invente pas de contenu au-delà de ce que tu vois ici :`
+          : `Le document est long et son titre de section n'a pas pu être repéré automatiquement : voici un extrait (partie ${idx + 1}/${chunks.length}) :`;
+        const cover = (idx === 0 && coverText) ? [{ text: 'Début du document (page de garde, pour les informations du projet) :\n' + coverText.replace(/\s+/g, ' ').slice(0, 3000) + '\n\nTableau :\n' }] : [];
+        const parts = [{ text: prompt + '\n\n' + contextNote }, ...cover, { text: chunks[idx] }];
+        try {
+          results[idx] = await callGeminiJSON(parts, ITEM_SCHEMA_HINT, onRetry);
+        } catch(e){ if (!firstErr) firstErr = e; }
+        done++; finished[idx] = true; tick();
+        if (progressCb) progressCb(`Analyse IA en parallèle — ${done}/${chunks.length} parties terminées (document Word volumineux)…`);
+      }
+    }
+    if (progressCb) progressCb(`Document Word volumineux — ${chunks.length} parties envoyées en parallèle…`);
+    try { await Promise.all(Array.from({length: Math.min(CONCURRENCY, chunks.length)}, worker)); } finally { clearInterval(tickId); }
+    progFrac(1);
+    let operation = null, lot = null, projet = null;
+    const allItems = [];
+    for (const result of results){
+      if (!result || !Array.isArray(result.items)) continue;
+      if (!operation && result.operation) operation = result.operation;
+      if (!lot && result.lot) lot = result.lot;
+      if (result.projet && typeof result.projet === 'object'){ projet = projet || {}; for (const k in result.projet){ if (result.projet[k] && !projet[k]) projet[k] = result.projet[k]; } }
+      allItems.push(...result.items);
+    }
+    if (!allItems.length){ if (firstErr) throw firstErr; throw new Error('Aucun article trouvé dans l\'ensemble des parties du document.'); }
+    return { operation, lot, projet, items: allItems };
   }
 
   // Analyse un gros PDF scanné tranche de pages par tranche de pages (au lieu
@@ -14878,6 +15007,24 @@ label{font-size:11px}
     if (progressCb) progressCb('Lecture et repérage des tableaux BPU et DQE…');
     const bpuContent = await buildContentParts(bpuFile, 'bpu');
     const dqeContent = await buildContentParts(dqeFile, 'dqe');
+    // Un seul document Word volumineux fourni pour le BPU ET le DQE à la fois
+    // double la quantité de texte à renvoyer en JSON (les deux tableaux dans
+    // la même réponse) — la réponse de l'IA peut alors être coupée avant la
+    // fin ("Réponse IA illisible"). Dans ce cas, on traite le BPU et le DQE
+    // séparément (chacun pouvant lui-même être découpé en plusieurs parties
+    // si besoin, voir geminiExtractItemsChunkedDocx) plutôt qu'en un seul
+    // appel combiné.
+    const bpuTooBig = bpuContent.docxSection && bpuContent.docxSection.length > DOCX_CHUNK_CHAR_THRESHOLD;
+    const dqeTooBig = dqeContent.docxSection && dqeContent.docxSection.length > DOCX_CHUNK_CHAR_THRESHOLD;
+    if (bpuTooBig || dqeTooBig){
+      const bpuRes = await geminiExtractItems(bpuFile, 'bpu', progressCb);
+      const dqeRes = await geminiExtractItems(dqeFile, 'dqe', progressCb);
+      return {
+        bpuItems: bpuRes.items, dqeItems: dqeRes.items,
+        bpuMeta: { operation: bpuRes.operation, lot: bpuRes.lot, projet: bpuRes.projet },
+        dqeMeta: { operation: dqeRes.operation, lot: dqeRes.lot, projet: dqeRes.projet }
+      };
+    }
     const parts = [
       { text: combinedPrompt(isSame) + '\n\n===BPU===' },
       ...bpuContent.parts,
