@@ -13208,7 +13208,7 @@ label{font-size:11px}
   <div class="step hidden" id="stepManualPlaceWord">
     <h2><span class="num">✎</span>Édition directe du document Word</h2>
     <p style="margin:0 0 10px; font-size:0.82rem; color:var(--ink-soft);">
-      Un fichier Word n'a pas de mise en page fixe comme un PDF : cliquez directement dans le texte ci-dessous, à l'endroit voulu (ex: après "l'unité:...."), et tapez la valeur. La liste à droite rappelle les valeurs de chaque article.
+      Les prix ont été remplis automatiquement dans le document ci-dessous (en <span style="background:#fff6b3;padding:0 3px;">jaune</span>) — vérifiez-les. Pour un article non reconnu automatiquement, cliquez directement dans le texte à l'endroit voulu et tapez la valeur ; la liste à droite rappelle les valeurs de chaque article.
     </p>
     <div style="display:flex; gap:16px; flex-wrap:wrap;">
       <div id="manualWordArea" contenteditable="true"
@@ -16241,8 +16241,112 @@ label{font-size:11px}
     updateManualInfo();
     refreshManualJump();
   });
-  // ================= Word : édition directe (pas de mise en page fixe à cliquer) =================
+  // ================= Word : remplissage automatique dans le document d'origine =================
   let manualWordKind = null;
+
+  // Le PDF place déjà les prix tout seul (positions détectées par l'IA,
+  // correction manuelle seulement si besoin) ; le Word, lui, se contentait
+  // jusqu'ici d'afficher une copie vide du document + une liste de valeurs à
+  // recopier à la main. On fait maintenant la même chose que pour le PDF :
+  // on retrouve chaque ligne du tableau d'origine grâce à son code (N°, I-1,
+  // II-1-1…), déjà extrait par l'IA, et on écrit directement le prix dedans —
+  // tout en gardant la zone modifiable pour corriger si une ligne n'a pas pu
+  // être reconnue automatiquement.
+  function normCode(c){ return String(c == null ? '' : c).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+
+  // Un même document regroupe souvent plusieurs lots, chacun recommençant sa
+  // numérotation à "I", "1", etc. — un code seul ("1", "I-1"...) n'identifie
+  // donc PAS un article de façon unique dans tout le document. On ne fait
+  // donc jamais une recherche par code dans l'ensemble du document : on
+  // reconnaît d'abord les tableaux qui correspondent au bon type (BPU ou
+  // DQE, d'après leurs en-têtes de colonnes), puis, à l'intérieur de ces
+  // tableaux seulement, on avance dans la liste des articles extraits (déjà
+  // dans l'ordre du document) au fil des lignes rencontrées — jamais en
+  // arrière, jamais en sautant plus loin que quelques lignes — pour ne
+  // jamais confondre deux articles de lots différents qui portent le même
+  // numéro.
+  function classifyTableKind(table){
+    const allText = table.textContent.toUpperCase();
+    const hasPrix = /PRIX\s*UNIT/.test(allText) || /\bP\.?U\.?\b/.test(allText);
+    if (!hasPrix) return null; // pas un tableau de prix (page de garde, signature...) : on l'ignore
+    const hasMontant = /MONTANT/.test(allText) && /QUANTIT/.test(allText);
+    return hasMontant ? 'dqe' : 'bpu';
+  }
+
+  function autoFillWordHtml(html, kind, rows){
+    const parser = new DOMParser();
+    const doc = parser.parseFromString('<div id="ot-root">' + html + '</div>', 'text/html');
+    const root = doc.getElementById('ot-root');
+
+    let filled = 0, matched = 0, cursor = 0;
+    const LOOKAHEAD = 4; // quelques lignes de titre/sous-titre peuvent s'intercaler sans article correspondant
+    let lastItem = null; // pour la ligne suivante "L'unité ......... DA" (BPU)
+    const isBlank = (el) => !el.textContent.replace(/[\s.…\-–_]/g, '').trim();
+    const setCellText = (td, text) => {
+      const p = td.querySelector('p') || td;
+      p.textContent = text;
+      td.style.backgroundColor = '#fff6b3'; // repère visuel : valeur ajoutée automatiquement, à vérifier
+    };
+
+    Array.from(root.querySelectorAll('table')).forEach(table => {
+      if (classifyTableKind(table) !== kind) return; // tableau d'un autre type (ou non reconnu) : on n'y touche pas
+      const trs = Array.from(table.querySelectorAll('tr'));
+
+      trs.forEach(tr => {
+        const tds = Array.from(tr.children).filter(td => td.tagName === 'TD');
+        if (!tds.length){ lastItem = null; return; }
+        const firstText = tds[0].textContent.replace(/\s+/g, ' ').trim();
+
+        // Ligne-phrase propre au BPU Word : "L'unité:.......... DA" — le blanc
+        // à remplir n'est pas une colonne de tableau mais une suite de points
+        // à l'intérieur du texte, juste après la ligne de l'article concerné.
+        if (kind === 'bpu' && tds.length === 1 && /unit[ée].{0,4}[.…\-\s]{4,}.*\bDA\b/i.test(firstText)){
+          if (lastItem && lastItem.prix_u !== null && lastItem.prix_u !== '' && lastItem.prix_u !== undefined){
+            const priceTxt = fmtPriceFr(lastItem.prix_u);
+            const p = tds[0].querySelector('p') || tds[0];
+            const newText = firstText.replace(/(unit[ée][^:]*:?\s*)[.…\-\s]{4,}(\s*DA\s*)$/i, (m, pre, suf) => pre + ' ' + priceTxt + ' ' + suf);
+            if (newText !== firstText){ p.textContent = newText; p.style.backgroundColor = '#fff6b3'; filled++; }
+          }
+          return;
+        }
+
+        // Première cellule = code de l'article (N°, I, I-1, II-1-1…), toujours
+        // courte ; si elle ne correspond à aucun article extrait, on passe
+        // cette ligne (titre de lot, sous-titre, ligne vide...) sans y toucher.
+        if (!firstText || firstText.length > 12){ lastItem = null; return; }
+        const want = normCode(firstText);
+        let off = -1;
+        for (let k = 0; k < LOOKAHEAD && cursor + k < rows.length; k++){
+          if (normCode(rows[cursor + k].code) === want){ off = k; break; }
+        }
+        if (off === -1){ lastItem = null; return; }
+        const item = rows[cursor + off];
+        cursor += off + 1; // on avance toujours vers l'avant, jamais en arrière
+        lastItem = item;
+        matched++;
+
+        if (kind === 'bpu'){
+          // Dernière cellule du tableau = colonne "Prix unitaire", normalement vide.
+          const lastTd = tds[tds.length - 1];
+          if (lastTd && isBlank(lastTd) && item.prix_u !== null && item.prix_u !== '' && item.prix_u !== undefined){
+            setCellText(lastTd, fmtPriceFr(item.prix_u));
+            filled++;
+          }
+        } else {
+          // DQE : avant-dernière cellule = Prix unitaire, dernière = Montant
+          // (la Quantité, elle, est déjà donnée dans le document — on n'y touche pas).
+          const pu = core.parseFrNum(item.pu !== undefined ? item.pu : item.prix_u);
+          const qte = core.parseFrNum(item.qte);
+          if (tds.length >= 2){
+            const puTd = tds[tds.length - 2], montantTd = tds[tds.length - 1];
+            if (puTd && isBlank(puTd) && pu){ setCellText(puTd, fmtPriceFr(pu)); filled++; }
+            if (montantTd && isBlank(montantTd) && pu && qte){ setCellText(montantTd, fmtPriceFr(pu * qte)); filled++; }
+          }
+        }
+      });
+    });
+    return { html: root.innerHTML, filled, matched, total: rows.length };
+  }
 
   async function openManualPlacementWord(kind, file){
     const html = await extractDocxText(file); // réutilise l'extraction déjà en place (HTML, sans images)
@@ -16274,8 +16378,9 @@ label{font-size:11px}
         extra.map(l => `<div style="padding:3px 0; border-bottom:1px dashed var(--line);">${l}</div>`).join('');
     }
 
+    const auto = autoFillWordHtml(html, kind, rows);
     const wordArea = document.getElementById('manualWordArea');
-    wordArea.innerHTML = html;
+    wordArea.innerHTML = auto.html;
     // Si le style « Manuscrite » est choisi, on l'applique aussi ici (pas
     // seulement dans le PDF) : la zone d'édition prend tout de suite l'allure
     // d'une écriture au stylo bleu, pour que ce qui est tapé — et donc ce qui
@@ -16283,7 +16388,10 @@ label{font-size:11px}
     applyWordHandwritingStyle(wordArea);
     document.getElementById('stepManualPlaceWord').classList.remove('hidden');
     document.getElementById('stepManualPlaceWord').scrollIntoView({ behavior: 'smooth' });
-    document.getElementById('manualWordMsg').textContent = '';
+    const missing = rows.length - auto.filled;
+    document.getElementById('manualWordMsg').textContent = auto.filled
+      ? `✓ ${auto.filled} valeur(s) remplie(s) automatiquement (surlignées en jaune — vérifiez-les).` + (missing > 0 ? ` ${missing} article(s) n'ont pas été reconnus automatiquement dans le tableau : reportez-les vous-même avec la liste à droite.` : '')
+      : `Aucune valeur n'a pu être reconnue automatiquement dans ce document : reportez-les vous-même avec la liste à droite.`;
   }
 
   function applyWordHandwritingStyle(el){
@@ -16315,6 +16423,10 @@ label{font-size:11px}
   document.getElementById('btnManualWordFinish').addEventListener('click', () => {
     try {
       let html = document.getElementById('manualWordArea').innerHTML;
+      // Le surlignage jaune ne sert qu'à l'écran, pour repérer ce qui a été
+      // rempli automatiquement avant de l'envoyer : on l'enlève du document
+      // final téléchargé, qui doit avoir l'air d'un document normal.
+      html = html.replace(/\s*background-color:\s*(#fff6b3|rgb\(\s*255,\s*246,\s*179\s*\));?/gi, '');
       // innerHTML ne reprend pas le style posé sur la zone d'édition elle-même
       // (manualWordArea) : on l'applique donc explicitement ici au contenu
       // exporté, pour que le Word téléchargé garde bien l'allure manuscrite
