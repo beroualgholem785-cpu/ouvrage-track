@@ -15050,6 +15050,21 @@ label{font-size:11px}
   // d'une liste d'articles extraite par l'IA — réutilise ensuite tout le moteur
   // existant (detectHeader / parseDQELines / parseBPU / writeResults) sans le
   // dupliquer, avec les mêmes garanties de relecture humaine.
+  // Préfixe le code par le n° de lot pour éviter les collisions quand
+  // plusieurs lots réutilisent la même numérotation (ex. "1","2","3" répétés
+  // dans chaque lot). On utilise un simple point comme séparateur : c'est le
+  // seul caractère que normCode() (dans le moteur partagé) laisse intact et
+  // que looksLikeCode()/CODE_RE reconnaissent comme un code valide
+  // ("N.code"), contrairement à un séparateur exotique que normCode()
+  // aurait simplement supprimé (ce qui recréerait des collisions).
+  function lotScopedCode(lotIndex, code){
+    return lotIndex + '.' + (code ?? '');
+  }
+  function stripLotPrefix(code){
+    if (code === null || code === undefined) return code;
+    return String(code).replace(/^\d+\./, '');
+  }
+
   function buildWorkbookFromItems(items, kind){
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Feuille1');
@@ -15058,12 +15073,18 @@ label{font-size:11px}
       : ['N°', 'Désignation', 'Unité', 'Prix unitaire'];
     ws.addRow(headers);
     ws.getRow(1).font = { bold: true };
+    let lotIndex = 0;
     for (const it of items){
+      if (it.type === 'lot') lotIndex++;
       if (it.type === 'section' || it.type === 'lot' || it.type === 'lot_fin') continue; // titres : pas de ligne chiffrable, ignorés côté Excel
+      // Préfixe le code par le n° de lot pour que le regroupement par code
+      // (core.parseBPU / parseDQELines, partagé avec les fichiers Excel natifs)
+      // ne confonde pas deux articles de lots différents portant le même code.
+      const codeScoped = it.code ? lotScopedCode(lotIndex, it.code) : it.code;
       if (kind === 'dqe'){
-        ws.addRow([it.code ?? '', it.designation ?? '', it.unite ?? '', it.quantite ?? '', it.prix_unitaire ?? '', '']);
+        ws.addRow([codeScoped ?? '', it.designation ?? '', it.unite ?? '', it.quantite ?? '', it.prix_unitaire ?? '', '']);
       } else {
-        ws.addRow([it.code ?? '', it.designation ?? '', it.unite ?? '', it.prix_unitaire ?? '']);
+        ws.addRow([codeScoped ?? '', it.designation ?? '', it.unite ?? '', it.prix_unitaire ?? '']);
       }
     }
     return { wb, ws };
@@ -15458,7 +15479,7 @@ label{font-size:11px}
         const canMarkLot = dqeAiSource && dqeOrderedItems && rowIdx[l.row] !== undefined;
         tr.innerHTML = `
           <td class="code-cell">${l.row}</td>
-          <td class="code-cell">${l.code || ''}</td>
+          <td class="code-cell">${stripLotPrefix(l.code) || ''}</td>
           <td class="desig" colspan="4"><b>${escapeHtml(l.label || '')}</b>${dqeAiSource ? ' <span class="ai-badge">IA</span>' : ''} <span style="color:var(--ink-soft); font-size:0.72rem;">(article principal / titre)</span></td>
           <td class="code-cell" style="white-space:nowrap;">
             ${canMarkLot ? `<button type="button" class="btn-ghost lotmk-start" style="padding:2px 6px; font-size:0.7rem; color:#1f3a5f; font-weight:600;" title="Transformer cette ligne en début de lot">Début lot</button>
@@ -15479,7 +15500,7 @@ label{font-size:11px}
       const desig = (isSub ? '<span style="color:var(--ink-soft);">└</span> ' : '') + escapeHtml(l.label || '') + (dqeAiSource ? ' <span class="ai-badge">IA</span>' : '');
       tr.innerHTML = `
         <td class="code-cell">${l.row}</td>
-        <td class="code-cell">${l.code || ''}</td>
+        <td class="code-cell">${stripLotPrefix(l.code) || ''}</td>
         <td class="desig" style="${isSub ? 'padding-left:22px;' : ''}">${desig}</td>
         <td>${l.unit || ''}</td>
         <td><input type="text" class="price-input" style="width:90px" data-role="qte" value="${l.qte ?? ''}"></td>
@@ -15541,8 +15562,8 @@ label{font-size:11px}
     if (matchedByDesignation && matchedByDesignation.length) {
       html += `<div style="color:var(--warn); margin-bottom:6px;"><b>${matchedByDesignation.length} article(s) apparié(s) par désignation</b> (le N° diffère entre BPU et DQE, mais le texte de l'article correspond) — repérables en jaune « Prix multiple » dans le tableau ci-dessous avec le détail dans la colonne Statut. Vérifiez-les avant de télécharger.</div>`;
     }
-    if (onlyBpu.length) html += `<div><b>${onlyBpu.length} article(s) du BPU sans AUCUNE correspondance dans le DQE</b> (ni par N°, ni par désignation) : ${onlyBpu.map(c=>`<code>${c}</code>`).join(' ')}</div>`;
-    if (onlyDqe.length) html += `<div style="margin-top:6px;"><b>${onlyDqe.length} article(s) du DQE sans AUCUNE correspondance dans le BPU</b> : ${onlyDqe.map(c=>`<code>${c}</code>`).join(' ')}</div>`;
+    if (onlyBpu.length) html += `<div><b>${onlyBpu.length} article(s) du BPU sans AUCUNE correspondance dans le DQE</b> (ni par N°, ni par désignation) : ${onlyBpu.map(c=>`<code>${stripLotPrefix(c)}</code>`).join(' ')}</div>`;
+    if (onlyDqe.length) html += `<div style="margin-top:6px;"><b>${onlyDqe.length} article(s) du DQE sans AUCUNE correspondance dans le BPU</b> : ${onlyDqe.map(c=>`<code>${stripLotPrefix(c)}</code>`).join(' ')}</div>`;
     box.innerHTML = html;
     box.classList.remove('hidden');
   }
@@ -15583,7 +15604,7 @@ label{font-size:11px}
       const priceEmpty = (r.prix_u === null || r.prix_u === undefined || r.prix_u === '');
       tr.innerHTML = `
         <td class="code-cell">${r.price_row}</td>
-        <td class="code-cell"><input class="code-input" value="${r.editedCode}" data-role="code" ${matchMode==='sequential'?'disabled title="Reciblage par N° indisponible en mode séquentiel"':''}></td>
+        <td class="code-cell"><input class="code-input" value="${stripLotPrefix(r.editedCode)}" data-role="code" ${(matchMode==='sequential'||bpuAiSource)?`disabled title="${bpuAiSource ? 'Reciblage par N° indisponible pour un document extrait automatiquement (PDF/Word)' : 'Reciblage par N° indisponible en mode séquentiel'}"`:''}></td>
         <td class="desig">${desig}</td>
         <td>${r.unit || ''}</td>
         <td><input type="text" class="price-input ${priceEmpty?'empty':''}" value="${r.prix_u ?? ''}" data-role="price"></td>
@@ -15996,11 +16017,11 @@ label{font-size:11px}
   function buildBpuManualRows(){
     const withWords = document.getElementById('optWords').checked;
     return results.filter(r => !r.skip && r.prix_u !== null && r.prix_u !== '')
-      .map(r => ({ ...r, mode: withWords ? 'price_words' : 'number', docKind: 'bpu' }));
+      .map(r => ({ ...r, code: stripLotPrefix(r.code), mode: withWords ? 'price_words' : 'number', docKind: 'bpu' }));
   }
   function buildDqeManualRows(){
     const rows = dqeLines.filter(l => !l.skip && l.pu !== null && l.pu !== '')
-      .map(l => ({ ...l, prix_u: l.pu, mode: 'price_montant', docKind: 'dqe' }));
+      .map(l => ({ ...l, prix_u: l.pu, code: stripLotPrefix(l.code), mode: 'price_montant', docKind: 'dqe' }));
     const agg = computeDqeAggregates(rows, dqeOrderedItems);
     for (const s of agg.subtotals) rows.push({ code: null, label: 'SOUS-TOTAL — ' + s.title, prix_u: s.value, mode: 'number', docKind: 'dqe' });
     rows.push({ code: null, label: 'TOTAL (HT)', prix_u: agg.totalHT, mode: 'number', docKind: 'dqe' });
@@ -16351,9 +16372,13 @@ label{font-size:11px}
   async function openManualPlacementWord(kind, file){
     const html = await extractDocxText(file); // réutilise l'extraction déjà en place (HTML, sans images)
     manualWordKind = kind;
+    // Le code peut être préfixé par un n° de lot en interne (pour éviter les
+    // collisions entre lots qui réutilisent la même numérotation) : on retire
+    // ce préfixe ici, car le document Word d'origine contient le vrai code,
+    // sans préfixe, et c'est ce vrai code qu'il faut chercher dans ses cases.
     const rows = kind === 'bpu'
-      ? results.filter(r => !r.skip && r.prix_u !== null && r.prix_u !== '')
-      : dqeLines.filter(l => !l.skip && l.pu !== null && l.pu !== '').map(l => ({ ...l, prix_u: l.pu }));
+      ? results.filter(r => !r.skip && r.prix_u !== null && r.prix_u !== '').map(r => ({ ...r, code: stripLotPrefix(r.code) }))
+      : dqeLines.filter(l => !l.skip && l.pu !== null && l.pu !== '').map(l => ({ ...l, prix_u: l.pu, code: stripLotPrefix(l.code) }));
     if (!rows.length){ alert('Aucun article avec un prix à positionner.'); return; }
 
     const withWords = kind === 'bpu' && document.getElementById('optWords').checked;
@@ -17511,7 +17536,7 @@ label{font-size:11px}
     set('svDuree', pi_months(pi.delai));
     const sel = document.getElementById('svGroup');
     const hasSections = !!(dqeOrderedItems && dqeOrderedItems.some(it => it.type === 'section'));
-    const hasDots = dqeLines.some(l => String(l.code || '').indexOf('.') > 0);
+    const hasDots = dqeLines.some(l => String(stripLotPrefix(l.code) || '').indexOf('.') > 0);
     if (sel && !sel.dataset.touched){
       const nSheets = (!dqeAiSource && wbDqe) ? wbDqe.worksheets.filter(w => (w.rowCount || 0) > 5).length : 1;
       const hasLots = !!(dqeAiSource && dqeOrderedItems && dqeOrderedItems.some(it => it.type === 'lot'));
