@@ -42,6 +42,26 @@ jobs:
           open(R + 'values/ic_launcher_background.xml', 'w').write('<?xml version="1.0" encoding="utf-8"?><resources><color name="ic_launcher_background">#FFFFFF</color></resources>')
           EOF
       - run: npx cap sync android
+      - name: Signer avec une clé stable (pour que les mises à jour s'installent sans erreur)
+        run: |
+          cp ci/ouvragetrack-debug.keystore android/app/debug.keystore
+          python3 - <<'EOF'
+          import re
+          p = 'android/app/build.gradle'
+          s = open(p, encoding='utf-8').read()
+          block = '''    signingConfigs {
+              debug {
+                  storeFile file('debug.keystore')
+                  storePassword 'ouvrageTrack2026'
+                  keyAlias 'ouvragetrack'
+                  keyPassword 'ouvrageTrack2026'
+              }
+          }
+          '''
+          s = s.replace('android {\n', 'android {\n' + block, 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          EOF
+          grep -A2 "signingConfigs" android/app/build.gradle
       - name: Compiler
         working-directory: android
         run: ./gradlew assembleDebug
