@@ -15498,10 +15498,20 @@ label{font-size:11px}
       const q = core.parseFrNum(l.qte), p = core.parseFrNum(l.pu);
       const montant = (!isNaN(q) && !isNaN(p)) ? q*p : null;
       const desig = (isSub ? '<span style="color:var(--ink-soft);">└</span> ' : '') + escapeHtml(l.label || '') + (dqeAiSource ? ' <span class="ai-badge">IA</span>' : '');
+      // Article ou sous-article sans prix : on propose aussi de marquer une FIN
+      // de lot ici, pas seulement sur les lignes "titre" (isHeadLine) — ces
+      // lignes ont une quantité/unité réelle (sinon elles seraient déjà traitées
+      // comme ligne titre ci-dessus), donc on n'offre pas "Début lot" dessus
+      // (ça remplacerait la ligne et ferait perdre sa quantité) : seulement
+      // "Fin lot", qui insère un repère au-dessus sans toucher à la ligne.
+      const canEndLotHere = dqeAiSource && dqeOrderedItems && rowIdx[l.row] !== undefined && (l.pu === null || l.pu === undefined || String(l.pu).trim() === '');
       tr.innerHTML = `
         <td class="code-cell">${l.row}</td>
         <td class="code-cell">${stripLotPrefix(l.code) || ''}</td>
-        <td class="desig" style="${isSub ? 'padding-left:22px;' : ''}">${desig}</td>
+        <td class="desig" style="${isSub ? 'padding-left:22px;' : ''}">${desig}${canEndLotHere ? `
+          <span style="float:right; white-space:nowrap;">
+            <button type="button" class="btn-ghost lotmk-end" style="padding:1px 5px; font-size:0.68rem; color:#555;" title="Insérer une fin de lot juste au-dessus de cette ligne (la ligne reste)">Fin lot</button>
+          </span>` : ''}</td>
         <td>${l.unit || ''}</td>
         <td><input type="text" class="price-input" style="width:90px" data-role="qte" value="${l.qte ?? ''}"></td>
         <td><input type="text" class="price-input" data-role="pu" value="${l.pu ?? ''}"></td>
@@ -15515,6 +15525,9 @@ label{font-size:11px}
         l.pu = e.target.value === '' ? null : e.target.value;
         updateDqeRowMontant(tr, l);
       });
+      if (canEndLotHere){
+        tr.querySelector('.lotmk-end').addEventListener('click', () => endLotAbove('item', l));
+      }
       tbody.appendChild(tr);
     }
     Object.keys(mkBy).forEach(k => { if (!drawn.has(Number(k)) && !drawn.has(k)) bannersFor(Number(k)); });
