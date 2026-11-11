@@ -15498,18 +15498,18 @@ label{font-size:11px}
       const q = core.parseFrNum(l.qte), p = core.parseFrNum(l.pu);
       const montant = (!isNaN(q) && !isNaN(p)) ? q*p : null;
       const desig = (isSub ? '<span style="color:var(--ink-soft);">└</span> ' : '') + escapeHtml(l.label || '') + (dqeAiSource ? ' <span class="ai-badge">IA</span>' : '');
-      // Article ou sous-article sans prix : on propose aussi de marquer une FIN
-      // de lot ici, pas seulement sur les lignes "titre" (isHeadLine) — ces
-      // lignes ont une quantité/unité réelle (sinon elles seraient déjà traitées
-      // comme ligne titre ci-dessus), donc on n'offre pas "Début lot" dessus
-      // (ça remplacerait la ligne et ferait perdre sa quantité) : seulement
-      // "Fin lot", qui insère un repère au-dessus sans toucher à la ligne.
-      const canEndLotHere = dqeAiSource && dqeOrderedItems && rowIdx[l.row] !== undefined && (l.pu === null || l.pu === undefined || String(l.pu).trim() === '');
+      // Article ou sous-article sans prix : on propose aussi Début lot / Fin lot
+      // ici, pas seulement sur les lignes "titre" (isHeadLine). "Début lot"
+      // remplace la ligne par un bandeau de lot (sa quantité/unité éventuelle
+      // est alors perdue) : une confirmation est demandée uniquement si la
+      // ligne porte une vraie quantité ou unité à perdre.
+      const canMarkLotHere = dqeAiSource && dqeOrderedItems && rowIdx[l.row] !== undefined && (l.pu === null || l.pu === undefined || String(l.pu).trim() === '');
       tr.innerHTML = `
         <td class="code-cell">${l.row}</td>
         <td class="code-cell">${stripLotPrefix(l.code) || ''}</td>
-        <td class="desig" style="${isSub ? 'padding-left:22px;' : ''}">${desig}${canEndLotHere ? `
+        <td class="desig" style="${isSub ? 'padding-left:22px;' : ''}">${desig}${canMarkLotHere ? `
           <span style="float:right; white-space:nowrap;">
+            <button type="button" class="btn-ghost lotmk-start" style="padding:1px 5px; font-size:0.68rem; color:#1f3a5f; font-weight:600;" title="Transformer cette ligne en début de lot">Début lot</button>
             <button type="button" class="btn-ghost lotmk-end" style="padding:1px 5px; font-size:0.68rem; color:#555;" title="Insérer une fin de lot juste au-dessus de cette ligne (la ligne reste)">Fin lot</button>
           </span>` : ''}</td>
         <td>${l.unit || ''}</td>
@@ -15525,7 +15525,12 @@ label{font-size:11px}
         l.pu = e.target.value === '' ? null : e.target.value;
         updateDqeRowMontant(tr, l);
       });
-      if (canEndLotHere){
+      if (canMarkLotHere){
+        tr.querySelector('.lotmk-start').addEventListener('click', () => {
+          const hasData = (l.qte !== null && l.qte !== undefined && String(l.qte).trim() !== '') || (l.unit && String(l.unit).trim() !== '');
+          if (hasData && !confirm('Cette ligne a une quantité et/ou une unité saisie. Les transformer en début de lot fera perdre cette quantité/unité (seul le texte devient le titre du lot). Continuer ?')) return;
+          startLotHere('item', l);
+        });
         tr.querySelector('.lotmk-end').addEventListener('click', () => endLotAbove('item', l));
       }
       tbody.appendChild(tr);
