@@ -1057,7 +1057,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
     <span id="ro-text">Mode consultation — Lecture seule</span>
   </div>
 
-  <div class="print-header"><h1 id="print-title">OUVRAGE TRACK — SUIVI DE MARCHÉ</h1><p id="print-info">Rapport imprimé le —</p></div>
+  <div class="print-header"><h1 id="print-title">SUIVI DE MARCHÉ</h1><p id="print-info">Rapport imprimé le —</p></div>
 
   <div id="bpu-host" style="display:none;height:calc(100vh - 90px);min-height:480px"></div>
   <div id="app"></div>
@@ -2404,7 +2404,7 @@ function getGeminiSystemPrompt() {
     '████████████████████████████████████████████████████████',
     '',
     '== IDENTIFICATION ==',
-    'Projet        : ' + (proj.name||'Ouvrage Track'),
+    'Projet        : ' + (proj.name||''),
     'Maitre Ouvrage: ' + (proj.moa||'-'),
     'Wilaya        : ' + (proj.wilaya||'-'),
     'Description   : ' + (proj.desc||'-'),
@@ -4071,7 +4071,7 @@ async function exportIAReportPDF() {
     doc.rect(0,0,W,11,'F');
     doc.setTextColor.apply(doc,WHITE);
     doc.setFontSize(7); doc.setFont('helvetica','bold');
-    doc.text('OUVRAGE TRACK — RAPPORT IA '+rType.toUpperCase(), MAR, 7.5);
+    doc.text('RAPPORT '+rType.toUpperCase(), MAR, 7.5);
     doc.text(dateStr+'  |  Page '+pageN, W-MAR, 7.5, {align:'right'});
     Y=18;
   }
@@ -4123,7 +4123,7 @@ async function exportIAReportPDF() {
   doc.setFontSize(22); doc.setFont('helvetica','bold');
   doc.text('RAPPORT IA '+rType.toUpperCase(), W/2, logoDataUrl?33:27, {align:'center'});
   doc.setFontSize(10); doc.setFont('helvetica','normal');
-  doc.text((proj.name||'Ouvrage Track').toUpperCase()+'  ·  '+dateStr+'  ·  Gemini', W/2, logoDataUrl?40:38, {align:'center'});
+  doc.text((proj.name||'').toUpperCase()+'  ·  '+dateStr, W/2, logoDataUrl?40:38, {align:'center'});
 
   Y=53;
 
@@ -4309,7 +4309,7 @@ async function exportIAReportPDF() {
     doc.line(0,284,W,284);
     doc.setTextColor.apply(doc,GRAY);
     doc.setFontSize(7); doc.setFont('helvetica','italic');
-    doc.text('Rapport généré par l\'Agent IA Ouvrage Track — '+dateStr+'  |  CONFIDENTIEL', MAR, 291);
+    doc.text(dateStr+'  |  CONFIDENTIEL', MAR, 291);
     doc.text('Page '+p+' / '+total, W-MAR, 291, {align:'right'});
   }
 
@@ -4394,7 +4394,7 @@ async function exportIAReportWord() {
     alignment: D.AlignmentType.CENTER,
     spacing:{before:400,after:80},
     shading:{type:D.ShadingType.CLEAR, fill:C_BLUE},
-    children:[new D.TextRun({text:(proj.enteteL1 || proj.moa || 'OUVRAGE TRACK'), bold:true, size:22, color:C_WHITE, font:'Calibri'})]
+    children:[new D.TextRun({text:(proj.enteteL1 || proj.moa || ''), bold:true, size:22, color:C_WHITE, font:'Calibri'})]
   }));
   children.push(new D.Paragraph({
     alignment: D.AlignmentType.CENTER,
@@ -4412,7 +4412,7 @@ async function exportIAReportWord() {
     spacing:{before:0,after:80},
     border:{bottom:{style:D.BorderStyle.SINGLE,size:8,color:C_BLUE,space:1}},
     children:[
-      new D.TextRun({text:(proj.name||'Ouvrage Track').toUpperCase(), bold:true, size:26, color:C_NAVY, font:'Calibri'}),
+      new D.TextRun({text:(proj.name||'').toUpperCase(), bold:true, size:26, color:C_NAVY, font:'Calibri'}),
       new D.TextRun({text:'   ·   '+dateStr+'   ·   Gemini', size:20, color:C_GRAY, font:'Calibri'})
     ]
   }));
@@ -4537,7 +4537,7 @@ async function exportIAReportWord() {
     spacing:{before:400},
     border:{top:{style:D.BorderStyle.SINGLE,size:4,color:'CCCCCC',space:1}},
     children:[new D.TextRun({
-      text:'Document généré par l\'Agent IA Ouvrage Track — '+dateStr+'  |  CONFIDENTIEL — Usage interne uniquement',
+      text:dateStr+'  |  CONFIDENTIEL — Usage interne uniquement',
       size:16, color:C_GRAY, italics:true, font:'Calibri'
     })]
   }));
@@ -7759,7 +7759,7 @@ function avenantPDF(i){
   doc.text(info.sigEnt || 'L\'Entreprise', M+15, Y); doc.text(info.sigMoa || 'Le Maître de l\'ouvrage', W-M-15, Y, {align:'right'});
   Y += 30; doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
   doc.text('Visa du contrôle externe / commission des marchés : ' + (av.visaNum ? 'N° ' + av.visaNum : '................') + (av.visaDate ? ' du ' + new Date(av.visaDate).toLocaleDateString('fr-FR') : ''), M, Y);
-  doc.setFontSize(8); doc.setTextColor(120); doc.text('Projet généré par Ouvrage Track — à vérifier et à adapter au cahier des charges et à la réglementation en vigueur avant signature.', M, 290); doc.setTextColor(0);
+  doc.setFontSize(8); doc.setTextColor(120); doc.text('Document à vérifier et à adapter au cahier des charges et à la réglementation en vigueur avant signature.', M, 290); doc.setTextColor(0);
   doc.save('Avenant_' + String(av.num).replace(/[^\w-]+/g,'_') + '_au_marche.pdf');
 }
 
@@ -7871,7 +7871,7 @@ function selectPrintOption(option){
 function generatePrint(){
   closeM('modal-print');
   const printTitle = document.getElementById('print-title');
-  if(printTitle) printTitle.textContent = `SUIVI DE MARCHÉ — ${CURRENT_PROJECT?.name || 'OUVRAGE TRACK'}`;
+  if(printTitle) printTitle.textContent = CURRENT_PROJECT?.name ? `SUIVI DE MARCHÉ — ${CURRENT_PROJECT.name}` : `SUIVI DE MARCHÉ`;
   const printInfo = document.getElementById('print-info');
   if(printInfo) printInfo.textContent = `Rapport ${PRINT_OPTION.toUpperCase()} - ${new Date().toLocaleDateString('fr-FR')} - ${ROLE_LABELS[CURRENT_ROLE] || 'Utilisateur'}`;
   const originalDisplay = document.querySelector('.print-header').style.display;
@@ -7922,7 +7922,7 @@ async function exportProjectPDF() {
     doc.setTextColor(...C_WHITE);
     doc.setFontSize(7);
     doc.setFont('helvetica', 'bold');
-    doc.text((proj.enteteRunning || 'OUVRAGE TRACK — SUIVI DE MARCHÉ'), MAR, 8);
+    doc.text((proj.enteteRunning || 'SUIVI DE MARCHÉ'), MAR, 8);
     doc.text(dateStr, W - MAR, 8, { align: 'right' });
   }
 
@@ -8052,7 +8052,7 @@ async function exportProjectPDF() {
   doc.setTextColor(...C_GRAY);
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
-  doc.text('Document généré par Ouvrage Track — ' + dateStr, W/2, 280, { align: 'center' });
+  doc.text(dateStr, W/2, 280, { align: 'center' });
   doc.text('CONFIDENTIEL — Usage interne uniquement', W/2, 285, { align: 'center' });
 
   // ── PAGE 2 : RÉCAPITULATIF FINANCIER ─────────────────────
@@ -8490,7 +8490,7 @@ async function exportProjectPDF() {
     doc.setTextColor(...C_GRAY);
     doc.setFontSize(7);
     doc.setFont('helvetica', 'normal');
-    doc.text('Ouvrage Track — Suivi de Marché — ' + dateStr, MAR, 291);
+    doc.text('Suivi de Marché — ' + dateStr, MAR, 291);
     doc.text('Page ' + i + ' / ' + pageCount, W - MAR, 291, { align: 'right' });
   }
 
@@ -10991,7 +10991,7 @@ function dcExportPDF(){
   doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(...DARK);
   doc.text('L\'Entreprise', MAR+10, Y); doc.text('Le Bureau d\'études / Contrôle', W/2, Y, {align:'center'}); doc.text('Le Maître d\'ouvrage', W-MAR-10, Y, {align:'right'});
   const n = doc.getNumberOfPages();
-  for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GRAY); doc.text('Ouvrage Track — '+dcTitre(c)+' — page '+i+'/'+n, W/2, 291, {align:'center'}); }
+  for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GRAY); doc.text(dcTitre(c)+' — page '+i+'/'+n, W/2, 291, {align:'center'}); }
   doc.save(dcFileName(c,'pdf'));
   toast('PDF du décompte téléchargé','ok');
 }
@@ -11056,7 +11056,7 @@ function otDocPDF(spec){
     spec.sign.forEach((s,i)=>doc.text(s, MAR + (W-2*MAR)*(i+0.5)/m, Y, {align:'center'}));
   }
   const pn = doc.getNumberOfPages();
-  for(let i=1;i<=pn;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GRAY); doc.text('Ouvrage Track — '+spec.title+' — page '+i+'/'+pn, W/2, H-5, {align:'center'}); }
+  for(let i=1;i<=pn;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GRAY); doc.text(spec.title+' — page '+i+'/'+pn, W/2, H-5, {align:'center'}); }
   doc.save(spec.file + '.pdf'); toast('PDF téléchargé','ok');
 }
 function otDocXLSX(spec){
@@ -11393,7 +11393,7 @@ async function mdBuildPDF(){
   doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
   [[info.sigMoa,38],[info.sigBet,105],[info.sigEnt,172]].forEach(function(s){ doc.setFont('helvetica','bold'); doc.text(s[0], s[1], ry, {align:'center'}); doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.text('(Cachet et signature)', s[1], ry+5, {align:'center'}); doc.setFontSize(10.5); });
   const pn = doc.getNumberOfPages();
-  for(let i=1;i<=pn;i++){ doc.setPage(i); const ph = doc.internal.pageSize.getHeight(), pw = doc.internal.pageSize.getWidth(); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120); doc.text('Ouvrage Track — Situation N° '+nn+' — page '+i+'/'+pn, pw/2, ph-4, {align:'center'}); }
+  for(let i=1;i<=pn;i++){ doc.setPage(i); const ph = doc.internal.pageSize.getHeight(), pw = doc.internal.pageSize.getWidth(); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(120); doc.text('Situation N° '+nn+' — page '+i+'/'+pn, pw/2, ph-4, {align:'center'}); }
   const base = (pr.name||'projet').replace(/[^\w\-]+/g,'_').slice(0,40);
   doc.save('Attachement_Situation_Recap_'+nn+'_'+base+'.pdf');
   toast('Dossier PDF N° '+nn+' généré (ATT + SIT + REC)','ok');
