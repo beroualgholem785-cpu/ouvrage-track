@@ -91,6 +91,10 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
       return null;
     }
     window.__ANDROID_APP = 9;
+    // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
+    // puisse vérifier qu'il a bien la dernière version après une mise à jour.
+    // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
+    var __OT_BUILD = '2026-11-12';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -100,7 +104,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
         clearTimeout(el.__t); el.__t = setTimeout(function(){ el.style.display = 'none'; }, ms || 4000);
       }catch(e){}
     }
-    window.addEventListener('load', function(){ setTimeout(function(){ say(window, 'Application Android v9', false, 2500); }, 1500); });
+    window.addEventListener('load', function(){ setTimeout(function(){ say(window, 'Application Android — version du ' + __OT_BUILD, false, 2500); }, 1500); });
     function toB64(blob){ return new Promise(function(res, rej){ var r = new FileReader(); r.onload = function(){ res(String(r.result).split(',')[1] || ''); }; r.onerror = rej; r.readAsDataURL(blob); }); }
     async function deliver(href, rawName, w){
       var name = String(rawName || 'fichier').replace(/[\\\/:*?"<>|]+/g, '_') || 'fichier';
