@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-12';
+    var __OT_BUILD = '2026-11-13';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -1908,7 +1908,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
       <div class="ia-modal-icon">🤖</div>
       <div>
         <div class="ia-modal-title">Assistant IA — Ouvrage Track</div>
-        <div class="ia-modal-subtitle">Powered by Google Gemini · Accès complet aux données du projet</div>
+        <div class="ia-modal-subtitle">Accès complet aux données du projet</div>
       </div>
       <button onclick="closeM('modal-ia')" style="margin-left:auto;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;width:28px;height:28px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0">✕</button>
     </div>
@@ -4043,7 +4043,16 @@ async function exportIAReportPDF() {
   if (!raw) { toast("Générez d'abord un rapport IA", 'err'); return; }
   if (!window.jspdf) { toast('Bibliothèque PDF non chargée', 'err'); return; }
   toast('⏳ Génération PDF...', 'ok');
-
+  // Tout le corps est protégé : avant, une erreur ici échouait en silence
+  // (aucun message, aucun téléchargement) — maintenant l'utilisateur est prévenu.
+  try {
+  _exportIAReportPDFBody(raw);
+  } catch(e) {
+    console.error('Export PDF rapport IA :', e);
+    toast('Erreur export PDF : ' + (e && e.message || 'erreur inconnue'), 'err');
+  }
+}
+function _exportIAReportPDFBody(raw) {
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({orientation:'portrait', unit:'mm', format:'a4'});
   var typeLabels = {executive:'Exécutif', technical:'Technique', financial:'Financier', planning:'Planning', consolidated:'Consolidé', chat:'Chat IA'};
@@ -4113,7 +4122,7 @@ async function exportIAReportPDF() {
 
   // ── PAGE DE TITRE ──────────────────────────────────────
   var logoDataUrl = proj.logoDataUrl || null;
-  var enteteL1 = proj.enteteL1 || proj.moa || 'OUVRAGE TRACK';
+  var enteteL1 = proj.enteteL1 || proj.moa || '';
   var enteteL2 = proj.enteteL2 || '';
   doc.setFillColor.apply(doc,BLUE);
   doc.rect(0,0,W,45,'F');
@@ -4134,7 +4143,9 @@ async function exportIAReportPDF() {
   // ── FICHE SIGNALÉTIQUE DU PROJET ────────────────────────
   // Renseignée directement depuis les données du projet (fiable, indépendante du texte
   // généré par l'IA) pour garantir des informations toujours exactes et bien présentées.
-  (function(){
+  // Protégée par try/catch : une donnée de projet incomplète ou inattendue ne doit
+  // jamais faire échouer tout l'export (la fiche serait alors simplement omise).
+  try { (function(){
     var g = calcGlobal();
     var ph = P.lots.length ? calcPhysical() : {pctPhysique:0, pctTheorique:0};
     var moisRef = P.months && P.months.length ? P.months[Math.min(P.moisIdx||0, P.months.length-1)] : '—';
@@ -4178,7 +4189,7 @@ async function exportIAReportPDF() {
     });
     Y = doc.lastAutoTable.finalY + 6;
     pageN = doc.getNumberOfPages();
-  })();
+  })(); } catch(eFiche) { console.warn('Fiche signalétique PDF ignorée (erreur) :', eFiche); }
 
   // ── RENDU DES TOKENS ───────────────────────────────────
   var tokens = parseMdLines(raw);
@@ -4338,7 +4349,16 @@ async function exportIAReportWord() {
   if (!raw) { toast("Générez d'abord un rapport IA", 'err'); return; }
   if (!window.docx) { toast('Bibliothèque Word non chargée', 'err'); return; }
   toast('⏳ Création Word...', 'ok');
-
+  // Protège toute la construction du document (avant, une erreur ici échouait
+  // en silence, sans aucun message ni téléchargement).
+  try {
+    await _exportIAReportWordBody(raw);
+  } catch(e) {
+    console.error('Export Word rapport IA :', e);
+    toast('Erreur export Word : ' + (e && e.message || 'erreur inconnue'), 'err');
+  }
+}
+async function _exportIAReportWordBody(raw) {
   // Nettoyer les emojis et caractères non supportés par Word 2007/2010
   function sanitizeForWord(text) {
     if (!text) return '';
@@ -7948,7 +7968,7 @@ async function exportProjectPDF() {
 
   // Logo (si défini dans Paramètres) + Titre
   const logoDataUrl = proj.logoDataUrl || null;
-  const enteteL1 = proj.enteteL1 || proj.moa || 'OUVRAGE TRACK';
+  const enteteL1 = proj.enteteL1 || proj.moa || '';
   const enteteL2 = proj.enteteL2 || '';
   if(logoDataUrl){
     try{ doc.addImage(logoDataUrl, 'PNG', W/2-12, 6, 24, 24); }catch(e){}
