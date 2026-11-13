@@ -1,0 +1,31 @@
+OUVRAGE TRACK - Remplissage BPU/DQE + Suivi de marche
+
+INSTALLATION (1 minute, sans internet)
+ 1. Branchez la cle USB.
+ 2. Double-cliquez sur INSTALLER.bat
+ 3. L'icone "Ouvrage Track" apparait sur le Bureau. Cliquez dessus : l'application s'ouvre.
+ La cle USB peut ensuite etre retiree.
+
+ACTIVATION (au premier lancement)
+ Un ecran affiche le "Code de cet ordinateur". Envoyez-le au vendeur, qui repond avec un
+ code d'activation. Collez-le, cliquez Activer : c'est fait (une seule fois par ordinateur).
+
+SANS INSTALLER : double-cliquez sur Lancer_sans_installer.bat (la cle doit rester branchee).
+
+PRE-REQUIS : Windows 10/11 avec Microsoft Edge (deja present) ou Google Chrome.
+SAUVEGARDE : une copie de securite est deposee automatiquement dans
+Documents\Sauvegardes Ouvrage Track (raccourci sur le Bureau). Copiez ce dossier sur une cle USB
+ou dans le cloud de temps en temps. Pour restaurer : Import / Export > Restaurer une sauvegarde.
+
+CLE IA : une seule cle Gemini, a saisir une fois dans Parametres. Elle sert a l'Agent IA,
+aux rapports et au Remplissage BPU/DQE.
+
+Les donnees (marches, situations, attachements) restent sur l'ordinateur ou l'application est installee.
+Pensez a utiliser regulierement l'export/sauvegarde de l'application.
+
+ANALYSE PAR IA (optionnelle) : necessite internet et une cle gratuite Google Gemini
+(https://aistudio.google.com/apikey) a coller dans l'application en haut de page.
+Tout le reste fonctionne hors connexion.
+
+Mise a jour : recopiez le nouveau dossier OuvrageTrack et relancez INSTALLER.bat
+(les donnees sont conservees).

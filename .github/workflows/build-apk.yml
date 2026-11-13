@@ -69,14 +69,22 @@ jobs:
         with:
           name: OuvrageTrack-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Construire le pack Windows (clé USB) avec la dernière version de l'app
+        run: |
+          mkdir -p pkg/OuvrageTrack/app/libs pkg/OuvrageTrack/app/icons
+          cp windows-skeleton/LISEZ-MOI.txt windows-skeleton/Lancer.vbs windows-skeleton/install.vbs windows-skeleton/Lancer_sans_installer.bat windows-skeleton/INSTALLER.bat windows-skeleton/ouvrage-track.ico pkg/OuvrageTrack/
+          cp windows-skeleton/app-icon.png pkg/OuvrageTrack/app/
+          cp www/index.html pkg/OuvrageTrack/app/index.html
+          cp www/libs/*.js pkg/OuvrageTrack/app/libs/
+          cp www/icons/*.png pkg/OuvrageTrack/app/icons/
+          (cd pkg && zip -r -q ../OuvrageTrack_Windows.zip OuvrageTrack)
+          unzip -l OuvrageTrack_Windows.zip | tail -5
       - name: Publier les liens de téléchargement
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk OuvrageTrack.apk
-          files="OuvrageTrack.apk"
-          z=$(ls windows/*.zip OuvrageTrack_Windows*.zip 2>/dev/null | sort -V | tail -1)
-          if [ -n "$z" ]; then cp "$z" OuvrageTrack_Windows.zip; files="$files OuvrageTrack_Windows.zip"; echo "Zip Windows : $z"; fi
+          files="OuvrageTrack.apk OuvrageTrack_Windows.zip"
           gh release delete telechargement --yes --cleanup-tag || true
           gh release create telechargement $files --target "${{ github.sha }}" --latest --title "Ouvrage Track - téléchargement" --notes "Fichiers à télécharger par les utilisateurs."
