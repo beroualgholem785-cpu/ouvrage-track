@@ -1488,7 +1488,8 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
       <div class="fg"><label>Prolongation de délai (jours)</label><input type="number" id="av-delai" min="0" step="1" placeholder="0" oninput="avRefresh()"></div>
       <div class="fg"><label>Statut</label>
         <select id="av-statut" onchange="avRefresh()">
-          <option value="en_attente">En attente</option>
+          <option value="brouillon">Brouillon</option>
+          <option value="en_attente">En attente de signature</option>
           <option value="en_cours">En cours d'instruction</option>
           <option value="signe">Signé</option>
           <option value="refuse">Refusé</option>
@@ -3114,7 +3115,7 @@ function genererAvenantExcel() {
     ligneChamp(aoa, merges, 'Date', av.date || '\u2014');
     ligneChamp(aoa, merges, 'Objet', av.objet || '\u2014');
     ligneChamp(aoa, merges, 'Lot(s) concern\u00e9(s)', av.lots || 'Tous lots');
-    ligneChamp(aoa, merges, 'Statut', av.statut === 'signe' ? 'Sign\u00e9' : (av.statut === 'refuse' ? 'Refus\u00e9' : (av.statut === 'en_cours' ? "En cours d'instruction" : 'En attente')));
+    ligneChamp(aoa, merges, 'Statut', av.statut === 'signe' ? 'Sign\u00e9' : (av.statut === 'refuse' ? 'Refus\u00e9' : (av.statut === 'en_cours' ? "En cours d'instruction" : (av.statut === 'brouillon' ? 'Brouillon' : 'En attente de signature'))));
     ligneChamp(aoa, merges, 'Montant Avenant HT', av.montant != null ? DA(av.montant) : '\u2014');
     ligneChamp(aoa, merges, 'Observation', av.obs || '\u2014');
     aoa.push(blankRow());
@@ -4757,7 +4758,7 @@ function getLongueurReponsesIA() { return (CURRENT_PROJECT && CURRENT_PROJECT.lo
 
 let P = {
   lots: [], months: [], moisIdx: 0, activeLot: null, search: '',
-  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [],
+  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [], journal: [],
   charts: {}, editTarget: null
 };
 let pendingArticles = [];
@@ -5047,6 +5048,7 @@ function loadData(){
       if(d.docInfo) P.docInfo = d.docInfo;
       P.attSoumis = d.attSoumis || {}; P.attPrix = d.attPrix === true; P.attRapports = d.attRapports || {}; P.garanties = d.garanties || undefined; P.revision = d.revision || undefined;
       if(d.photos) P.photos = d.photos;
+      P.journal = d.journal || [];
     }
   }catch(e){}
   if(P.months.length === 0 && CURRENT_PROJECT){
@@ -5090,7 +5092,16 @@ function updateMonthSelects(){
 // ── JOURNAL DES MODIFICATIONS (audit trail) ─────────────────
 // Enregistre qui (rôle) a fait quoi (action) et quand (horodatage).
 // Fonctionnalité Journal des Modifications supprimée : logJournal ne fait plus rien.
-function logJournal(entity, action, label){ /* désactivé */ }
+// ── Journal d'audit : trace qui (profil connecté) a fait quoi et quand. Conservé avec le projet,
+// plafonné pour ne pas alourdir le stockage (les entrées les plus anciennes sont retirées).
+var JOURNAL_MAX = 500;
+function logJournal(entity, action, label){
+  try{
+    if(!P.journal) P.journal = [];
+    P.journal.push({ t: new Date().toISOString(), who: (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE) || '', entity: entity||'', action: action||'', label: label||'' });
+    if(P.journal.length > JOURNAL_MAX) P.journal.splice(0, P.journal.length - JOURNAL_MAX);
+  } catch(e){}
+}
 
 function saveAll(){
   if(CURRENT_ROLE !== 'admin') return;
@@ -5099,7 +5110,7 @@ function saveAll(){
     _sSet(projDataKey(CURRENT_PROJECT.id), JSON.stringify({
       lots: P.lots, months: P.months, moisIdx: P.moisIdx, activeLot: P.activeLot,
       ordresService: P.ordresService, avenants: P.avenants, tc: P.tc, ts: P.ts, td: P.td, pv: P.pv||[],
-      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision
+      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision, journal: P.journal||[]
     }));
   } catch(e){}
   try{ syncAfterSave(); }catch(e){}
@@ -7712,7 +7723,7 @@ function openAv(editIdx){
   $('av-lots').value = av ? (av.lots||'') : ''; $('av-lots').dataset.auto = av ? '' : '1';
   $('av-montant').value = av ? (av.montant||0) : '';
   $('av-delai').value = av ? (av.delai||'') : '';
-  $('av-statut').value = av ? (av.statut||'en_attente') : 'en_attente';
+  $('av-statut').value = av ? (av.statut||'en_attente') : 'brouillon';
   $('av-visa').value = av ? (av.visaNum||'') : '';
   $('av-visadate').value = av ? (av.visaDate||'') : '';
   $('av-obs').value = av ? (av.obs||'') : '';
@@ -9087,7 +9098,7 @@ function exportDataExcel() {
     [],
     [C('STATUTS VALIDES',true,'1A5695')],
     [C('TC/TS : en_cours | realise | valide | en_attente')],
-    [C('AVENANTS : en_cours | signe | refuse')],
+    [C('AVENANTS : brouillon | en_attente | en_cours | signe | refuse')],
     [C('PAIEMENTS : en_cours | vise | paye | rejete')],
   ]);
   ws8['!cols'] = [{wch:100}];
@@ -10301,7 +10312,7 @@ function rAvenants(){
   const avList=P.avenants||[];
   const T=avTotalsProjet(); const g=T.g;
   const SEUIL=getSeuilTCTS(), SC=avSeuilCommission();
-  const statutBadge={en_cours:'<span class="badge bo">En cours</span>',signe:'<span class="badge bg">Signé</span>',en_attente:'<span class="badge bn">En attente</span>',refuse:'<span class="badge br">Refusé</span>'};
+  const statutBadge={brouillon:'<span class="badge bc">Brouillon</span>',en_cours:'<span class="badge bo">En cours</span>',signe:'<span class="badge bg">Signé</span>',en_attente:'<span class="badge bn">En attente de signature</span>',refuse:'<span class="badge br">Refusé</span>'};
   const totalAv=avList.reduce(function(s,a){return s+(a.montant||0);},0);
   const totalAvSigne=avSigneTotal(-1);
   const base=g.budgetInitial||0;
@@ -10605,7 +10616,21 @@ function rParametres(){
     </div>
   </div>`;
   if(editable) h += `<div style="margin-top:18px;display:flex;justify-content:flex-end"><button class="btn bgd" onclick="saveProjectSettings()">💾 Enregistrer les paramètres</button></div>`;
+  h += rJournalPanel();
   return h;
+}
+function rJournalPanel(){
+  const J = (P.journal||[]).slice().reverse();
+  const rows = J.slice(0, 200).map(function(e){
+    const dt = e.t ? new Date(e.t) : null;
+    const ds = dt ? dt.toLocaleDateString('fr-FR') + ' ' + dt.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '—';
+    return `<tr><td style="white-space:nowrap;font-size:11px">${ds}</td><td style="font-size:11px">${escapeHtml(e.entity||'')}</td><td style="font-size:11px">${escapeHtml(e.action||'')}</td><td style="font-size:11px">${escapeHtml(e.who||'—')}</td><td style="font-size:11.5px">${escapeHtml(e.label||'')}</td></tr>`;
+  }).join('');
+  return `<details class="tbl-wrap" style="padding:10px 14px;margin-top:18px">
+    <summary style="cursor:pointer;font-weight:700">Journal d'activité (${J.length} entrée${J.length>1?'s':''}${J.length>=JOURNAL_MAX?' — plafonné à '+JOURNAL_MAX:''})</summary>
+    <div style="font-size:11px;color:var(--g3);margin:8px 0">Historique des créations, modifications et suppressions (date/heure) sur ce projet. Les 200 entrées les plus récentes sont affichées ci-dessous, les plus anciennes au-delà de ${JOURNAL_MAX} sont retirées automatiquement.</div>
+    ${J.length ? `<div style="max-height:320px;overflow:auto"><table><thead><tr><th>Date</th><th>Rubrique</th><th>Action</th><th>Profil</th><th>Détail</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div style="font-size:12px;color:var(--g3)">Aucune activité enregistrée pour l'instant.</div>`}
+  </details>`;
 }
 
 function onLogoFileSelected(inp){
