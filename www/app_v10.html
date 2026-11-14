@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-13';
+    var __OT_BUILD = '2026-11-14';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -5328,6 +5328,21 @@ function tsEff(){ return (P.ts||[]).filter(avOK); }
 function tcEff(){ return (P.tc||[]).filter(avOK); }
 function tdEff(){ return (P.td||[]).filter(avOK); }
 function pvEff(){ return (P.pv||[]).filter(avOK); }
+// ── Montant "extra-bordereau" d'un lot pour un mois donné : Travaux Complémentaires (TC) validés
+// + Plus-values sur prix (PV type "prix") formalisées par avenant signé. Ces éléments n'ont pas de
+// quantité d'article associée (contrairement aux TS / PV sur quantité / TD, déjà intégrés via
+// artMonthly()/avArt()), donc ils sont invisibles des Situations/Attachements/Dossier de situation
+// s'ils ne sont pas ajoutés explicitement ici.
+function tcPvExtraItems(lotId, mi){
+  var out = [];
+  tcEff().filter(function(t){ return t.lot===lotId && t.statut==='valide' && parseInt(t.mois)===mi; })
+    .forEach(function(t){ out.push({lbl:'TC — '+(t.des||t.ref||'Travaux complémentaires'), mnt:(t.qty||0)*(t.pu||0), av:t.av||'', mois:mi}); });
+  pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix' && parseInt(t.mois)===mi; })
+    .forEach(function(t){ out.push({lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), mnt:(t.mPV||0), av:t.av||'', mois:mi}); });
+  return out;
+}
+function tcPvExtraMois(lotId, mi){ return tcPvExtraItems(lotId, mi).reduce(function(s,e){ return s+e.mnt; }, 0); }
+function tcPvExtraCumul(lotId, uptoMi){ var s=0; for(var i=0;i<=uptoMi;i++) s += tcPvExtraMois(lotId, i); return s; }
 function avRuleSet(v){ if(!canEdit()) return; CURRENT_PROJECT.avValidation = !!v; try{ saveProjects(loadProjects().map(function(x){ return x.id === CURRENT_PROJECT.id ? Object.assign(x, {avValidation: !!v}) : x; })); }catch(e){} saveAll(); renderApp(); toast(v ? 'Règle activée : seuls les éléments d\'un avenant signé sont pris en compte' : 'Règle désactivée : tous les TS/TC/TD sont pris en compte', 'ok'); }
 function calcLot(lot){
   let budget=0, budgetInitial=0, real=0, tsAuto=0, desengage=0;
@@ -6561,7 +6576,7 @@ function saveTC(){
   logJournal('tc', isEdit?'modification':'creation', `Lot ${lot} — "${des.substring(0,60)}" : ${N2(qty)} ${unit} × ${DA(pu)} = ${DA(qty*pu)}`);
   saveAll();
   closeM('modal-tc');
-  toast('TC enregistré', 'ok');
+  toast('TC enregistré — à inclure dans le prochain avenant (page Avenants)', 'ok', 4000);
   renderApp();
 }
 function deleteTC(i){ if(confirm('Supprimer ce TC ?')){ const t=P.tc[i]; logJournal('tc','suppression', `Lot ${t.lot} — "${(t.des||'').substring(0,60)}" (${DA((t.qty||0)*(t.pu||0))})`); P.tc.splice(i,1); saveAll(); renderApp(); toast('TC supprimé','ok'); } }
@@ -6640,7 +6655,7 @@ function saveTS(){
   document.getElementById('modal-ts').dataset.editIdx='-1';
   saveAll();
   closeM('modal-ts');
-  toast('TS enregistré','ok');
+  toast('TS enregistré — à inclure dans le prochain avenant (page Avenants)','ok',4000);
   renderApp();
 }
 function deleteTS(i){ if(confirm('Supprimer ce TS manuel ?')){ const t=P.ts[i]; logJournal('ts','suppression', `Lot ${t.lot} — Art. ${t.art||'?'} "${(t.des||'').substring(0,60)}" (${DA(t.mTS||0)})`); P.ts.splice(i,1); saveAll(); renderApp(); toast('TS supprimé','ok'); } }
@@ -6829,7 +6844,7 @@ function saveTD(){
   document.getElementById('modal-td').dataset.editIdx='-1';
   saveAll();
   closeM('modal-td');
-  toast('TD enregistrée','ok');
+  toast('TD enregistrée — à inclure dans le prochain avenant (page Avenants)','ok',4000);
   renderApp();
 }
 function deleteTD(i){ if(confirm('Supprimer cette TD ?')){ const t=P.td[i]; logJournal('td','suppression', `Lot ${t.lot} — Art. ${t.art||'?'} "${(t.des||'').substring(0,60)}" (-${DA(t.mTD||0)})`); P.td.splice(i,1); saveAll(); renderApp(); toast('TD supprimée','ok'); } }
@@ -7497,7 +7512,7 @@ function savePV(){
   if(!P.pv) P.pv = [];
   if(EDIT_PV_INDEX !== null && P.pv[EDIT_PV_INDEX]) P.pv[EDIT_PV_INDEX] = item; else P.pv.push(item);
   logJournal('pv', EDIT_PV_INDEX!==null?'modification':'creation', 'Lot '+lotId+' — PV '+(prix?'sur prix ':'sur quantité ')+(item.des||'').substring(0,50)+' ('+DA(item.mPV)+')');
-  saveAll(); closeM('modal-pv'); toast('Plus-value enregistrée','ok'); renderApp();
+  saveAll(); closeM('modal-pv'); toast('Plus-value enregistrée — à inclure dans le prochain avenant (page Avenants)','ok',4000); renderApp();
 }
 function deletePV(i){ if(confirm('Supprimer cette plus-value ?')){ const t = P.pv[i]; logJournal('pv','suppression','Lot '+t.lot+' — PV '+(t.des||'').substring(0,50)); P.pv.splice(i,1); saveAll(); renderApp(); toast('Plus-value supprimée','ok'); } }
 function pvRecap(){
@@ -10222,10 +10237,11 @@ function rSituations(){
   P.months.forEach((m,mi)=>{
     let mT=0;
     const lv=P.lots.map(lot=>{
-      const v=lot.articles.reduce((s,a)=>{
+      let v=lot.articles.reduce((s,a)=>{
         if(a.isSection||a.isGroup) return s;
         return s+((a.isInfo||isDes(a)) ? (a.m[mi]||0) : (artMonthly(lot,a)[mi]||0))*a.p;
       },0);
+      v += tcPvExtraMois(lot.id, mi); // Travaux Complémentaires validés + Plus-values sur prix du mois (avenant signé)
       mT+=v; return v;
     });
     cumul+=mT;
@@ -10240,6 +10256,9 @@ function rSituations(){
       +`<td class="r">${(g.budget+g.ts+g.pv)>0?(cumul/(g.budget+g.ts+g.pv)*100).toFixed(1)+'%':'—'}</td>`
       +`</tr>`;
   });
+  const lastMi = P.months.length-1;
+  const lotExtraTot = {}; let gExtraTot = 0;
+  P.lots.forEach(l=>{ const e = tcPvExtraCumul(l.id, lastMi); lotExtraTot[l.id]=e; gExtraTot+=e; });
   return `<div class="sec-hdr"><h2>Situations <span>Mensuelles</span></h2>
     ${otDocBar('sit')}
     ${canEdit()?`<div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -10253,10 +10272,11 @@ function rSituations(){
     <th class="r">Total HT</th><th class="r">TVA 19%</th><th class="r">Total TTC</th><th class="r">Cumulé HT</th><th class="r">%</th>
    </tr></thead><tbody>${rows}
   <tr style="background:var(--nv);color:#fff;font-weight:700">
-    <td>TOTAL</td>${P.lots.map(l=>`<td class="r">${DA(calcLot(l).real)}</td>`).join('')}
-    <td class="r">${DA(g.real)}</td><td class="r">${DA(g.real*TVA)}</td><td class="r">${DA(g.real*(1+TVA))}</td>
-    <td class="r">${DA(g.real)}</td><td class="r">${g.pct.toFixed(1)}%</td>
+    <td>TOTAL</td>${P.lots.map(l=>`<td class="r">${DA(calcLot(l).real+(lotExtraTot[l.id]||0))}</td>`).join('')}
+    <td class="r">${DA(g.real+gExtraTot)}</td><td class="r">${DA((g.real+gExtraTot)*TVA)}</td><td class="r">${DA((g.real+gExtraTot)*(1+TVA))}</td>
+    <td class="r">${DA(g.real+gExtraTot)}</td><td class="r">${g.pct.toFixed(1)}%</td>
   </tr></tbody></table></div>
+  ${gExtraTot>0?'<div class="alert ai" style="margin-top:10px"><span>i</span><div>Inclut '+DA(gExtraTot)+' de Travaux Complémentaires (TC) validés et de Plus-values sur prix déjà formalisés par avenant signé.</div></div>':''}
   <div class="chart-box"><h3>Situations mensuelles</h3><canvas id="ch-monthly"></canvas></div>`;
 }
 function rOS(){
@@ -11135,6 +11155,8 @@ function otLotsPeriode(k){
       const p=a.p||0, m=artMonthly(lot,a);
       for(let i=0;i<=k;i++){ const v=(m[i]||0)*p; ex+=v; if(i<k) prev+=v; }
     }
+    // Travaux Complémentaires (TC) validés + Plus-values sur prix déjà formalisés par avenant signé
+    ex += tcPvExtraCumul(lot.id, k); prev += tcPvExtraCumul(lot.id, k-1);
     return {lot, id:lot.id, nom:lot.name||lot.nom||'', marche:dcR2(c.total), prev:dcR2(prev), mois:dcR2(ex-prev), cumul:dcR2(ex), pct: c.total>0 ? ex/c.total*100 : 0};
   });
 }
@@ -11145,6 +11167,10 @@ function otSpecSituation(k){
   const secs = [];
   secs.push({heading:'Situation des travaux par lot', cols:[{h:'Lot',t:'c',w:16},{h:'Désignation',t:'t'},{h:'Marché HT',t:'m'},{h:'Antérieur HT',t:'m'},{h:'Mois HT',t:'m'},{h:'Cumul HT',t:'m'},{h:'% Avmt',t:'p',w:20}],
     rows: lots.map(l=>({c:[l.id,l.nom,l.marche,l.prev,l.mois,l.cumul,l.pct]})).concat([{k:'tot',c:['','TOTAL HT',dcR2(T.m),dcR2(T.p),ht,cumHT,T.m>0?T.c/T.m*100:0]}])});
+  const tcPvRows = [];
+  P.lots.forEach(function(lot){ tcPvExtraItems(lot.id, k).forEach(function(e){ tcPvRows.push({c:[lot.id, e.lbl, e.av ? (e.av+(avSigned(e.av)?' · signé':' · non signé')) : 'sans avenant', e.mnt]}); }); });
+  if(tcPvRows.length) secs.push({heading:'Dont Travaux Complémentaires (TC) et Plus-values sur prix formalisés par avenant (mois de '+mois+')',
+    cols:[{h:'Lot',t:'c',w:16},{h:'Désignation',t:'t'},{h:'Avenant',t:'t',w:30},{h:'Montant HT',t:'m',w:28}], rows: tcPvRows});
   secs.push({heading:'Montant de la situation de '+mois, cols:[{h:'Désignation',t:'t'},{h:'Montant ('+getDevise()+')',t:'m',w:60}],
     rows:(rv ? [{c:['Montant HT des travaux du mois',ht0]},{c:['Révision des prix du mois (K = '+revMois(k).K.toFixed(4)+')',rv]}] : []).concat([{c:[rv ? 'Montant HT du mois (révisé)' : 'Montant HT du mois',ht]},{c:['TVA '+(tvaR*100).toFixed(0)+' %',tva]},{k:'fin',c:['MONTANT TTC DE LA SITUATION',ttc]}]).concat(garLignesSit(ht)).concat([{k:'info',c:['Cumul HT à fin '+mois,cumHT]},{k:'info',c:['Cumul TTC à fin '+mois,cumTTC]}])});
   const cum = []; let cu = 0; const showLots = P.lots.length <= 6;
@@ -11170,9 +11196,20 @@ function otSpecAttachement(k, mode){
       art.push({c:[a.num||'', a.n||'', a.u||'', p, q, ante, cur, cum, q>0?cum/q*100:0, dcR2(cur*p), dcR2(cum*p)]});
       sM += cur*p; sC += cum*p;
     }
-    if(!art.length) return;
+    const extraCur = tcPvExtraMois(lot.id, k), extraCum = tcPvExtraCumul(lot.id, k);
+    const showExtra = mode==='mois' ? extraCur>0 : extraCum>0;
+    if(!art.length && !showExtra) return;
     rows.push({k:'sec', c:['Lot '+lot.id+' — '+(lot.name||lot.nom||'')]});
     art.forEach(x=>rows.push(x));
+    if(showExtra){
+      for(let mi=0; mi<=k; mi++){
+        tcPvExtraItems(lot.id, mi).forEach(function(e){
+          const isCur = mi===k;
+          rows.push({c:['', e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]'), '', '', '', '', '', '', '', dcR2(isCur?e.mnt:0), dcR2(e.mnt)]});
+        });
+      }
+      sM += extraCur; sC += extraCum;
+    }
     rows.push({k:'tot', c:['','Total lot '+lot.id,'','','','','','','',dcR2(sM),dcR2(sC)]});
     gM += sM; gC += sC;
   });
@@ -11323,7 +11360,9 @@ async function mdBuildPDF(){
     lotTot.length = 0;
     for(const lot of P.lots){
       const lotName = lot.name||lot.nom||'';
-      const arts = mdLotArts(lot, k); if(!arts.length) continue;
+      const arts = mdLotArts(lot, k);
+      const extraCum = withPrice ? tcPvExtraCumul(lot.id, k) : 0;
+      if(!arts.length && !extraCum) continue;
       push([{content:'Lot '+lot.id+(lotName?' : '+lotName:''), colSpan:nc, styles:{halign:'center', fontStyle:'bold', fontSize:11}}],'lot');
       let sI=0,sJ=0,sK=0;
       for(const a of arts){
@@ -11335,6 +11374,17 @@ async function mdBuildPDF(){
         const c = [a.isSubArticle?'':(a.num||''), (a.isSubArticle?'   ':'')+name, a.u||'', dcNum(a.q||0), dcNum(ante), {content:dcNum(cur), styles:{fontStyle:'bold'}}, dcNum(ante+cur)];
         if(withPrice){ c.push(dcNum(p0), dcNum(p0*ante), {content:dcNum(p0*cur), styles:{fontStyle:'bold'}}, dcNum(p0*(ante+cur))); }
         push(c,'art'); sI+=p0*ante; sJ+=p0*cur; sK+=p0*(ante+cur);
+      }
+      // Travaux Complémentaires (TC) validés + Plus-values sur prix, déjà formalisés par avenant signé
+      if(withPrice && extraCum){
+        for(let mi=0; mi<=k; mi++){
+          tcPvExtraItems(lot.id, mi).forEach(function(e){
+            const isCur = mi===k, m2 = e.mnt, ante2 = isCur?0:m2, cur2 = isCur?m2:0;
+            const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
+            push(['', {content:lbl, styles:{fontStyle:'italic'}}, '', '', '', '', '', '', dcNum(ante2), {content:dcNum(cur2), styles:{fontStyle:'bold'}}, dcNum(m2)], 'art');
+            sI += ante2; sJ += cur2; sK += m2;
+          });
+        }
       }
       lotTot.push({I:dcR2(sI),J:dcR2(sJ),K:dcR2(sK)});
       if(withPrice) push([{content:'S/Total (Lot '+lot.id+') '+lotName+' =', colSpan:8, styles:{halign:'right', fontStyle:'bolditalic'}}, dcNum(sI), dcNum(sJ), dcNum(sK)],'sub');
@@ -11480,7 +11530,7 @@ async function mdBuild(){
   const boxRow = (ws,row,cols)=>style(ws,row,cols,c=>{ c.border = BOX; });
   for(const lot of P.lots){
     const lotName = (lot.name||lot.nom||'');
-    const artsK = mdLotArts(lot, k); if(!artsK.length) continue;
+    const artsK = mdLotArts(lot, k); const lotExtraCum = tcPvExtraCumul(lot.id, k); if(!artsK.length && !lotExtraCum) continue;
     const title = 'Lot '+lot.id+(lotName?' : '+lotName:'');
     [[sAtt,7],[sSit,11]].forEach(function(p){ const ws=p[0], n=p[1]; ws.mergeCells(r,1,r,n); const c = ws.getCell(r,1); c.value = title; c.font = {name:TNR,size:14,bold:true}; c.alignment = {horizontal:'center',vertical:'middle',wrapText:true}; boxRow(ws,r,n); ws.getRow(r).height = estH(title, 60, 20, 22); });
     r++;
@@ -11524,12 +11574,30 @@ async function mdBuild(){
       });
       r++;
     }
+    // Travaux Complémentaires (TC) validés + Plus-values sur prix, déjà formalisés par avenant signé
+    // (pas de quantité d'article : montants seuls, feuille SIT uniquement)
+    let tExtra = 0;
+    if(lotExtraCum){
+      for(let mi=0; mi<=k; mi++){
+        tcPvExtraItems(lot.id, mi).forEach(function(e){
+          const isCur = mi===k, m2 = e.mnt, ante2 = isCur?0:m2, cur2 = isCur?m2:0;
+          const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
+          sSit.mergeCells(r,1,r,2); boxRow(sSit,r,11);
+          const cB = sSit.getCell(r,1); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
+          const vals = [[9,ante2],[10,cur2],[11,m2]];
+          vals.forEach(function(v){ const c = sSit.getCell(r,v[0]); c.value = dcR2(v[1]); c.numFmt = NF; c.font = {name:TNR,size:9,bold:v[0]===10}; c.alignment={horizontal:'right',vertical:'middle'}; });
+          tExtra += m2;
+          r++;
+        });
+      }
+    }
     const endArt = r-1;
     // sous-total du lot (SIT) / ligne vide (ATT)
     sSit.mergeCells(r,2,r,8);
     const lab = sSit.getCell(r,2); lab.value = 'S/Total (Lot '+lot.id+') '+lotName+' ='; lab.font = {name:TNR,size:11,bold:true,italic:true}; lab.alignment = {horizontal:'right',vertical:'middle'};
     let tI=0,tJ=0,tK=0;
     for(const a of (lot.articles||[])){ if(!a||a.isSection||a.isGroup||a.isInfo||isDes(a)) continue; const m=a.m||[]; let ante=0; for(let i=0;i<k;i++) ante+=(m[i]||0); const cur=m[k]||0, p0=a.p||0; tI+=p0*ante; tJ+=p0*cur; tK+=p0*(ante+cur); }
+    tI += Math.max(0, lotExtraCum - tcPvExtraMois(lot.id,k)); tJ += tcPvExtraMois(lot.id,k); tK += lotExtraCum;
     [[9,'I',tI],[10,'J',tJ],[11,'K',tK]].forEach(function(v){ const c = sSit.getCell(r,v[0]); c.value = {formula:'SUM('+v[1]+startArt+':'+v[1]+endArt+')', result:dcR2(v[2])}; c.numFmt = NF; c.font={name:TNR,size:11,bold:true}; c.alignment={horizontal:'right',vertical:'middle'}; });
     boxRow(sSit,r,11);
     lotTot.push({row:r, I:dcR2(tI), J:dcR2(tJ), K:dcR2(tK)});
