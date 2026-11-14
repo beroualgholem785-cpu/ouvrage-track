@@ -4758,7 +4758,7 @@ function getLongueurReponsesIA() { return (CURRENT_PROJECT && CURRENT_PROJECT.lo
 
 let P = {
   lots: [], months: [], moisIdx: 0, activeLot: null, search: '',
-  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [], journal: [],
+  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [], journal: [], marcheVersions: [],
   charts: {}, editTarget: null
 };
 let pendingArticles = [];
@@ -5049,6 +5049,7 @@ function loadData(){
       P.attSoumis = d.attSoumis || {}; P.attPrix = d.attPrix === true; P.attRapports = d.attRapports || {}; P.garanties = d.garanties || undefined; P.revision = d.revision || undefined;
       if(d.photos) P.photos = d.photos;
       P.journal = d.journal || [];
+      P.marcheVersions = d.marcheVersions || [];
     }
   }catch(e){}
   if(P.months.length === 0 && CURRENT_PROJECT){
@@ -5110,7 +5111,7 @@ function saveAll(){
     _sSet(projDataKey(CURRENT_PROJECT.id), JSON.stringify({
       lots: P.lots, months: P.months, moisIdx: P.moisIdx, activeLot: P.activeLot,
       ordresService: P.ordresService, avenants: P.avenants, tc: P.tc, ts: P.ts, td: P.td, pv: P.pv||[],
-      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision, journal: P.journal||[]
+      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision, journal: P.journal||[], marcheVersions: P.marcheVersions||[]
     }));
   } catch(e){}
   try{ syncAfterSave(); }catch(e){}
@@ -7733,6 +7734,30 @@ function openAv(editIdx){
   document.getElementById('modal-av').classList.remove('hidden');
 }
 function editAv(i){ openAv(i); }
+// ── Historique versionné du marché : un instantané figé est pris à chaque signature d'avenant
+// (marché initial = P.marcheVersions vide ; après avenant 01 signé = 1ère entrée ; etc.). Les
+// instantanés se basent sur avArt()/calcLot(), donc ils reflètent l'effet cumulé de tous les
+// avenants signés jusqu'à cette date-là, sans jamais modifier les données vivantes des lots.
+function marcheSnapshotBuild(avNum, avDate){
+  const g = calcGlobal();
+  const lotsSnap = (P.lots||[]).map(function(lot){
+    const artsSnap = (lot.articles||[]).filter(function(a){ return a && !a.isSection && !a.isGroup && !a.isInfo && !isDes(a); }).map(function(a){
+      const e = avArt(lot, a);
+      return { num:a.num||'', n:a.n||'', u:a.u||'', qInit:a.q||0, qAjoutee:(e.tsQ||0)+(e.pvQ||0), qDeduite:e.tdQ||0, qNouvelle:e.newQ, p:a.p||0, montantInitial:(a.q||0)*(a.p||0), montantNouveau:e.newM, modifie:!!e.chg };
+    });
+    const c = calcLot(lot);
+    return { id:lot.id, nom:lot.name||lot.nom||'', montantInitial: (lot.articles||[]).reduce(function(s,a){ return s+((a&&!a.isSection&&!a.isGroup&&!a.isInfo&&!isDes(a))?(a.q||0)*(a.p||0):0); },0), montantActualise:c.total, articles:artsSnap };
+  });
+  return { avNum:avNum, avDate:avDate, horodate:new Date().toISOString(), montantInitial:g.budgetInitial, montantActualise:g.budgetActualise, lots:lotsSnap };
+}
+function marcheSnapshotSync(avNum, statut, avDate){
+  P.marcheVersions = P.marcheVersions || [];
+  const idx = P.marcheVersions.findIndex(function(v){ return v.avNum === avNum; });
+  if(statut === 'signe'){
+    const snap = marcheSnapshotBuild(avNum, avDate);
+    if(idx >= 0) P.marcheVersions[idx] = snap; else P.marcheVersions.push(snap);
+  } else if(idx >= 0){ P.marcheVersions.splice(idx, 1); }
+}
 function avSyncOS(av, oldNum){
   P.ordresService = P.ordresService || []; var list = P.ordresService;
   var idx = list.findIndex(function(o){ return o.avRef && (o.avRef === av.num || (oldNum && o.avRef === oldNum)); });
@@ -7760,6 +7785,8 @@ function saveAv(){
   const avItem = { num, date, objet, lots, montant, statut, obs: $('av-obs').value.trim(), type: $('av-type').value, osRef: $('av-osref').value.trim(), delai: Math.max(0, parseInt($('av-delai').value) || 0), visaNum: $('av-visa').value.trim(), visaDate: $('av-visadate').value, manuel: AV_MANUAL, nbTS: sel.keys.filter(function(k){return k.indexOf('ts')===0;}).length, nbTC: sel.keys.filter(function(k){return k.indexOf('tc')===0;}).length, nbPV: sel.keys.filter(function(k){return k.indexOf('pv')===0;}).length, nbTD: sel.keys.filter(function(k){return k.indexOf('td')===0;}).length, nbDS: sel.keys.filter(function(k){return k.indexOf('ds')===0;}).length };
   if(isEdit) P.avenants[EDIT_AV_INDEX] = avItem; else P.avenants.push(avItem);
   avSyncOS(avItem, oldNum);
+  if(oldNum && oldNum !== num) marcheSnapshotSync(oldNum, 'retire', date); // renumérotation : purge l'ancien n°
+  marcheSnapshotSync(num, statut, date);
   const ajouts = otEnsureCalendar();
   logJournal('avenant', isEdit?'modification':'creation', `Avenant N°${num} — ${objet.substring(0,60)} (${DA(montant)}, ${statut})`);
   saveAll();
@@ -7768,7 +7795,7 @@ function saveAv(){
   toast('Avenant enregistré' + (statut === 'signe' && avItem.delai > 0 ? ' — délai prolongé de ' + avItem.delai + ' j (OS de prorogation créé)' : '') + (ajouts ? ' — ' + ajouts + ' mois ajouté(s) au calendrier' : ''), 'ok');
   renderApp();
 }
-function deleteAv(i){ if(confirm('Supprimer cet avenant ?')){ const av=P.avenants[i]; logJournal('avenant','suppression', `Avenant N°${av.num||'?'} — ${(av.objet||'').substring(0,60)} (${DA(av.montant||0)})`); avAllItems().forEach(function(it){ if(it.tag === av.num) avSetTag(it, ''); }); avSyncOS({num:av.num, statut:'supprime', delai:0}, av.num); P.avenants.splice(i,1); saveAll(); renderApp(); toast('Avenant supprimé','ok'); } }
+function deleteAv(i){ if(confirm('Supprimer cet avenant ?')){ const av=P.avenants[i]; logJournal('avenant','suppression', `Avenant N°${av.num||'?'} — ${(av.objet||'').substring(0,60)} (${DA(av.montant||0)})`); avAllItems().forEach(function(it){ if(it.tag === av.num) avSetTag(it, ''); }); avSyncOS({num:av.num, statut:'supprime', delai:0}, av.num); marcheSnapshotSync(av.num, 'supprime', av.date); P.avenants.splice(i,1); saveAll(); renderApp(); toast('Avenant supprimé','ok'); } }
 
 // Projet d'avenant (PDF) — modèle administratif : objet, montants, nouveau montant, délai, clauses inchangées, signatures et visas
 function avenantPDF(i){
@@ -10308,6 +10335,32 @@ function rOS(){
   }
   return h;
 }
+function rMarcheVersions(){
+  const V = P.marcheVersions||[];
+  if(!V.length) return '';
+  let h = `<details class="tbl-wrap" style="padding:10px 14px;margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">Historique versionné du marché (${V.length} avenant${V.length>1?'s':''} signé${V.length>1?'s':''})</summary>`;
+  h += `<div style="font-size:11px;color:var(--g3);margin:8px 0">Instantané figé du marché pris à la signature de chaque avenant — le marché initial, puis chaque état successif, restent consultables même après la signature d'avenants suivants.</div>`;
+  const base0 = V.length ? V[0].montantInitial : (calcGlobal().budgetInitial||0);
+  h += `<div style="margin-bottom:10px"><span class="badge bn">Marché initial · ${DA(base0)}</span></div>`;
+  V.forEach(function(v, vi){
+    h += `<details style="margin:6px 0;padding:6px 10px;border:1px solid var(--bd);border-radius:6px"><summary style="cursor:pointer;font-size:12.5px;font-weight:700">Après avenant ${escapeHtml(v.avNum)} (${v.avDate||'—'}) — Marché actualisé : ${DA(v.montantActualise)}${vi>0?' (+'+DA(v.montantActualise-V[vi-1].montantActualise)+' depuis la version précédente)':' (+'+DA(v.montantActualise-base0)+' depuis le marché initial)'}</summary>`;
+    v.lots.forEach(function(lot){
+      if(Math.abs(lot.montantActualise - lot.montantInitial) < 0.01 && !lot.articles.some(function(a){ return a.modifie; })) return;
+      h += `<div style="margin-top:8px;font-weight:700;font-size:12px">Lot ${escapeHtml(lot.id)} — ${escapeHtml(lot.nom)} <span style="font-weight:400;color:var(--g3)">(${DA(lot.montantInitial)} → ${DA(lot.montantActualise)})</span></div>`;
+      const rows = lot.articles.filter(function(a){ return a.modifie; });
+      if(rows.length){
+        h += `<div style="overflow:auto"><table style="font-size:11px"><thead><tr><th>N°</th><th>Désignation</th><th>U</th><th class="r">Qté init.</th><th class="r">Qté ajoutée</th><th class="r">Qté déduite</th><th class="r">Nouvelle qté</th><th class="r">P.U.</th><th class="r">Montant initial</th><th class="r">Nouveau montant</th></tr></thead><tbody>`;
+        rows.forEach(function(a){
+          h += `<tr><td>${escapeHtml(a.num)}</td><td>${escapeHtml(String(a.n).substring(0,60))}</td><td>${escapeHtml(a.u)}</td><td class="r">${N2(a.qInit)}</td><td class="r" style="color:var(--or)">${a.qAjoutee?'+'+N2(a.qAjoutee):'—'}</td><td class="r" style="color:var(--rd)">${a.qDeduite?'−'+N2(a.qDeduite):'—'}</td><td class="r"><strong>${N2(a.qNouvelle)}</strong></td><td class="r">${DA(a.p)}</td><td class="r">${DA(a.montantInitial)}</td><td class="r"><strong>${DA(a.montantNouveau)}</strong></td></tr>`;
+        });
+        h += `</tbody></table></div>`;
+      }
+    });
+    h += `</details>`;
+  });
+  h += `</details>`;
+  return h;
+}
 function rAvenants(){
   const avList=P.avenants||[];
   const T=avTotalsProjet(); const g=T.g;
@@ -10331,6 +10384,7 @@ function rAvenants(){
   h+=`<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;margin-bottom:12px;padding:10px 12px;border:1.5px solid var(--bd);border-radius:8px"><input type="checkbox" ${avRule()?'checked':''} ${canEdit()?'':'disabled'} onchange="avRuleSet(this.checked)" style="margin-top:2px"><span><strong>Ne prendre en compte les TS, TC, TD, PV et désengagements qu'une fois l'avenant signé</strong><br><span style="color:var(--g3)">Activé : tant que l'avenant n'est pas signé, ces éléments n'apparaissent ni dans le marché actualisé, ni dans les situations, attachements, décomptes et le tableau de bord.</span></span></label>`;
   if(T.pBrut>=SC) h+=`<div class="alert aw" style="margin-bottom:12px"><span>!</span><div>Le cumul des prestations supplémentaires, complémentaires et des diminutions atteint <strong>${T.pBrut.toFixed(1)} %</strong> du montant initial (seuil ${SC} %) : un avenant est à établir et à soumettre à la commission des marchés compétente.${T.pAug>SEUIL?' Les augmentations dépassent '+SEUIL+' % : justification obligatoire devant la commission.':''}</div></div>`;
   h+=`<details class="tbl-wrap" style="padding:10px 14px;margin-bottom:14px"><summary style="cursor:pointer;font-weight:700">Rappel réglementaire (marchés publics algériens)</summary><ul style="font-size:12px;line-height:1.7;padding-left:18px;margin-top:8px"><li>Loi n° 23-12 du 5 août 2023, art. 81 : un avenant est conclu quand il augmente ou diminue les prestations ou modifie des clauses du marché ; il peut couvrir des prestations complémentaires entrant dans l'objet global du marché.</li><li>Décret d'application : en attendant l'avenant, le service contractant peut ordonner par <strong>OS</strong> les prestations supplémentaires ou complémentaires ; ce qui n'a pas été ordonné par OS ne peut pas être régularisé ensuite.</li><li>Dès que le cumul des prestations supplémentaires, complémentaires et des diminutions atteint <strong>10 %</strong> du montant initial, l'avenant est établi et soumis à la commission des marchés compétente.</li><li>Au-delà de <strong>20 %</strong> pour les travaux (15 % fournitures, études et services), l'augmentation doit être justifiée devant la commission.</li><li>Un avenant peut être conclu après la réception provisoire, avant la signature du décompte général et définitif.</li><li style="color:var(--g3)">Repères résumés d'après la loi 23-12 et une analyse juridique du décret d'application : vérifiez-les sur le texte officiel en vigueur et auprès de votre commission.</li></ul></details>`;
+  h += rMarcheVersions();
   if(avList.length===0){
     h+='<div class="empty"><div class="ei"></div><p>Aucun avenant</p>'+(canEdit()?'<button class="btn bpu" style="margin-top:12px" onclick="openAv()">Créer</button>':'')+'</div>';
   } else {
