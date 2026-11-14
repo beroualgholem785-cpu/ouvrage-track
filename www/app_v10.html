@@ -4758,7 +4758,7 @@ function getLongueurReponsesIA() { return (CURRENT_PROJECT && CURRENT_PROJECT.lo
 
 let P = {
   lots: [], months: [], moisIdx: 0, activeLot: null, search: '',
-  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [], journal: [], marcheVersions: [],
+  ordresService: [], avenants: [], tc: [], ts: [], td: [], paiements: [], photos: [], journal: [], marcheVersions: [], attHistorique: [],
   charts: {}, editTarget: null
 };
 let pendingArticles = [];
@@ -5050,6 +5050,7 @@ function loadData(){
       if(d.photos) P.photos = d.photos;
       P.journal = d.journal || [];
       P.marcheVersions = d.marcheVersions || [];
+      P.attHistorique = d.attHistorique || [];
     }
   }catch(e){}
   if(P.months.length === 0 && CURRENT_PROJECT){
@@ -5111,7 +5112,7 @@ function saveAll(){
     _sSet(projDataKey(CURRENT_PROJECT.id), JSON.stringify({
       lots: P.lots, months: P.months, moisIdx: P.moisIdx, activeLot: P.activeLot,
       ordresService: P.ordresService, avenants: P.avenants, tc: P.tc, ts: P.ts, td: P.td, pv: P.pv||[],
-      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision, journal: P.journal||[], marcheVersions: P.marcheVersions||[]
+      paiements: P.paiements, photos: P.photos, decompte: P.decompte, docInfo: P.docInfo, attSoumis: P.attSoumis, attPrix: P.attPrix===true, attRapports: P.attRapports||{}, garanties: P.garanties, revision: P.revision, journal: P.journal||[], marcheVersions: P.marcheVersions||[], attHistorique: P.attHistorique||[]
     }));
   } catch(e){}
   try{ syncAfterSave(); }catch(e){}
@@ -11779,13 +11780,35 @@ async function mdBuild(){
 // ═══════════════ PROFIL « ATTACHEMENT » : saisie des quantités + validation par le Responsable ═══════════════
 const ATT_PAGES = ['attachement','lots','photos'];
 function attStore(){ if(!P.attSoumis) P.attSoumis = {}; return P.attSoumis; }
+// ── Historique permanent des attachements : chaque transmission / validation / retour pour correction
+// est enregistrée ici de façon immuable (jamais effacée, jamais écrasée), même après que l'entrée
+// "en cours" dans P.attSoumis a été supprimée (validation) ou modifiée (nouvelle correction).
+function attHist(){ if(!P.attHistorique) P.attHistorique = []; return P.attHistorique; }
+function attHistSnap(k, e){
+  const lots = {}; let montant = 0, nb = 0;
+  Object.keys(e.q||{}).forEach(function(key){
+    const p = key.lastIndexOf('|'); const lotId = key.slice(0,p), idx = parseInt(key.slice(p+1));
+    const lot = P.lots.find(l=>l.id===lotId); const a = lot && lot.articles[idx]; if(!a) return;
+    lots[lotId] = true; nb++; montant += (e.q[key]||0) * (a.p||0);
+  });
+  return { lots:Object.keys(lots), montant:montant, nbArticles:nb };
+}
+function attHistPush(action, k, e, comment){
+  const snap = attHistSnap(k, e);
+  attHist().push({
+    num: attHist().length + 1, date: new Date().toISOString(), mois: k, moisLabel: (P.months||[])[k] || ('Mois '+(k+1)),
+    lots: snap.lots, entreprise: (CURRENT_PROJECT && CURRENT_PROJECT.entreprise) || '', nbArticles: snap.nbArticles, montant: snap.montant,
+    action: action, statut: {transmission:'Transmis', validation:'Validé', retour_correction:'Retourné pour correction'}[action] || action,
+    comment: comment || '', par: (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE) || ''
+  });
+}
 function attPersist(){
   if(CURRENT_ROLE === 'admin'){ saveAll(); return; }
   if(!CURRENT_PROJECT) return;
   try{
     const key = projDataKey(CURRENT_PROJECT.id); let d = {};
     try{ d = JSON.parse(_sGet(key) || '{}') || {}; }catch(e){}
-    d.attSoumis = P.attSoumis || {}; _sSet(key, JSON.stringify(d));
+    d.attSoumis = P.attSoumis || {}; d.attHistorique = P.attHistorique || []; _sSet(key, JSON.stringify(d));
   }catch(e){ console.error(e); }
   try{ syncKick(); }catch(e){}
 }
@@ -11915,7 +11938,7 @@ function attUpdateSummary(k){ const el = document.getElementById('att-count'); i
 function attSubmit(k){
   const e = attStore()[k]; if(!attHasContent(e)){ toast('Saisissez une quantité, un rapport ou une photo','err'); return; }
   if(!confirm('Envoyer cet attachement au Responsable pour validation ? Vous ne pourrez plus le modifier tant qu\'il n\'est pas traité.')) return;
-  e.status = 'soumis'; e.submittedAt = new Date().toISOString(); e.comment = ''; attPersist(); toast('Attachement envoyé à validation ✓','ok'); renderApp();
+  e.status = 'soumis'; e.submittedAt = new Date().toISOString(); e.comment = ''; attHistPush('transmission', k, e); attPersist(); toast('Attachement envoyé à validation ✓','ok'); renderApp();
 }
 function attWithdraw(k){ const e = attStore()[k]; if(!e) return; e.status = 'brouillon'; attPersist(); renderApp(); }
 function attClear(k){ if(!confirm('Effacer toutes les quantités saisies pour ce mois ?')) return; delete attStore()[k]; attPersist(); renderApp(); }
@@ -11974,7 +11997,7 @@ function rAttachement(){
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px"><span id="att-count" style="font-size:.85rem;color:var(--g3)">'+attCountDraft(cur)+' article(s) renseigné(s)</span>'+
     (locked ? '<button class="btn" onclick="attWithdraw('+cur+')">↩ Retirer l\'envoi pour corriger</button>' : '<button class="btn bgd" onclick="attSubmit('+cur+')">📨 Envoyer à validation</button><button class="btn" onclick="attClear('+cur+')">Effacer ma saisie</button>')+
     '<button class="btn" onclick="attExport('+cur+')">📤 Exporter le fichier (à transmettre)</button></div>'+
-    '<p style="font-size:.78rem;color:var(--g3);margin-top:10px">Saisissez les quantités exécutées ce mois-ci (laissez vide si rien). Elles ne sont enregistrées dans le suivi qu\'après validation du Responsable. Les quantités qui dépassent le marché sont affichées en rouge.</p></div>';
+    '<p style="font-size:.78rem;color:var(--g3);margin-top:10px">Saisissez les quantités exécutées ce mois-ci (laissez vide si rien). Elles ne sont enregistrées dans le suivi qu\'après validation du Responsable. Les quantités qui dépassent le marché sont affichées en rouge.</p>'+attHistTable()+'</div>';
   return h;
 }
 function attPrixOk(){ return CURRENT_ROLE !== 'metreur' || P.attPrix === true; }
@@ -12003,9 +12026,9 @@ function valValider(k){
     P.ts.push({lot:x.lot, des:'TS - '+(a.n||'').substring(0,80), art:a.num, artUid:a._uid, unit:a.u, qty:x.qty, pu:pu, mTS:x.qty*pu, mois:k, obs:x.obs||'', date:new Date().toISOString()}); nTs++; });
   if((e.photos||[]).length){ if(!P.photos) P.photos = []; e.photos.forEach(function(ph){ P.photos.push(Object.assign({}, ph, {by:'Attachement'})); }); }
   if(e.rapport && e.rapport.trim()){ if(!P.attRapports) P.attRapports = {}; P.attRapports[k] = {text:e.rapport, date:e.submittedAt||e.savedAt||new Date().toISOString(), validatedAt:new Date().toISOString(), nbPhotos:(e.photos||[]).length}; }
-  delete P.attSoumis[k]; P._valK = null; saveAll(); toast(n+' quantité(s)'+(nTc?', '+nTc+' TC':'')+(nTs?', '+nTs+' TS':'')+' validée(s)'+(tcSkip?' ('+tcSkip+' TC sans prix ignoré(s))':'')+((e.photos||[]).length?', '+e.photos.length+' photo(s) ajoutée(s) à la galerie':'')+' ✓','ok'); renderApp();
+  attHistPush('validation', k, e); delete P.attSoumis[k]; P._valK = null; saveAll(); toast(n+' quantité(s)'+(nTc?', '+nTc+' TC':'')+(nTs?', '+nTs+' TS':'')+' validée(s)'+(tcSkip?' ('+tcSkip+' TC sans prix ignoré(s))':'')+((e.photos||[]).length?', '+e.photos.length+' photo(s) ajoutée(s) à la galerie':'')+' ✓','ok'); renderApp();
 }
-function valRejeter(k){ const c = prompt('Remarque pour l\'attachement (ce qu\'il faut corriger) :',''); if(c === null) return; const e = attStore()[k]; if(!e) return; e.status = 'brouillon'; e.comment = c; P._valK = null; saveAll(); toast('Attachement renvoyé pour correction','ok'); renderApp(); }
+function valRejeter(k){ const c = prompt('Remarque pour l\'attachement (ce qu\'il faut corriger) :',''); if(c === null) return; const e = attStore()[k]; if(!e) return; attHistPush('retour_correction', k, e, c); e.status = 'brouillon'; e.comment = c; P._valK = null; saveAll(); toast('Attachement renvoyé pour correction','ok'); renderApp(); }
 function valSuppr(k){ if(!confirm('Supprimer cet attachement soumis ?')) return; delete attStore()[k]; P._valK = null; saveAll(); renderApp(); }
 function valTcPu(k, id, v){ const e = attStore()[k]; const x = e && (e.tc||[]).find(t=>t.id===id); if(!x) return; const n = parseFloat(v); x.pu = n > 0 ? n : 0; saveAll(); const el = document.getElementById('val-tc-m-'+id); if(el) el.textContent = dcMoney(x.qty*(x.pu||0)); }
 function valTsPu(k, id, v){ const e = attStore()[k]; const x = e && (e.ts||[]).find(t=>t.id===id); if(!x) return; const n = parseFloat(v); if(n > 0) x.pu = n; else delete x.pu; saveAll(); const el = document.getElementById('val-ts-m-'+id); if(el){ const lot = P.lots.find(l=>l.id===x.lot), a = lot && lot.articles[x.idx]; el.textContent = dcMoney(x.qty*(x.pu>0?x.pu:((a&&a.p)||0))); } }
@@ -12019,8 +12042,24 @@ function valXBlock(k, e){
   return h + '</tbody></table></div><p style="font-size:.78rem;color:var(--g3);margin:8px 0 0">TC : fixez le prix unitaire (obligatoire pour être enregistré). TS : le prix de l\'article du marché est utilisé si vous laissez vide.</p></div>';
 }
 function valArchive(){
-  const r = P.attRapports || {}; const ks = Object.keys(r).map(Number).sort((a,b)=>b-a); if(!ks.length) return '';
-  return '<h3 style="margin:18px 0 8px">📚 Rapports déjà validés</h3><div class="tbl-wrap"><table><thead><tr><th>Mois</th><th>Date</th><th>Rapport</th><th class="r">Photos</th></tr></thead><tbody>'+ks.map(function(k){ const x = r[k]; return '<tr><td><b>'+escapeHtml((P.months||[])[k]||('Mois '+(k+1)))+'</b></td><td>'+new Date(x.date).toLocaleDateString('fr-FR')+'</td><td style="white-space:pre-wrap;max-width:520px">'+escapeHtml(x.text)+'</td><td class="r">'+(x.nbPhotos||0)+'</td></tr>'; }).join('')+'</tbody></table></div>';
+  const r = P.attRapports || {}; const ks = Object.keys(r).map(Number).sort((a,b)=>b-a);
+  let h = attHistTable();
+  if(!ks.length) return h;
+  h += '<h3 style="margin:18px 0 8px">📚 Rapports déjà validés</h3><div class="tbl-wrap"><table><thead><tr><th>Mois</th><th>Date</th><th>Rapport</th><th class="r">Photos</th></tr></thead><tbody>'+ks.map(function(k){ const x = r[k]; return '<tr><td><b>'+escapeHtml((P.months||[])[k]||('Mois '+(k+1)))+'</b></td><td>'+new Date(x.date).toLocaleDateString('fr-FR')+'</td><td style="white-space:pre-wrap;max-width:520px">'+escapeHtml(x.text)+'</td><td class="r">'+(x.nbPhotos||0)+'</td></tr>'; }).join('')+'</tbody></table></div>';
+  return h;
+}
+// Historique permanent des attachements (transmissions / validations / retours pour correction) —
+// jamais écrasé : chaque action garde sa propre ligne, avec son propre commentaire le cas échéant.
+function attHistTable(){
+  const H = (P.attHistorique||[]).slice().reverse(); if(!H.length) return '';
+  const stCls = {transmission:'bb', validation:'bg', retour_correction:'br'};
+  const rows = H.slice(0,300).map(function(x){
+    const d = new Date(x.date);
+    return '<tr><td>'+x.num+'</td><td style="white-space:nowrap">'+d.toLocaleDateString('fr-FR')+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})+'</td><td><b>'+escapeHtml(x.moisLabel)+'</b></td><td>'+escapeHtml((x.lots||[]).join(', '))+'</td><td>'+escapeHtml(x.entreprise||'—')+'</td><td class="r">'+(x.nbArticles||0)+'</td><td class="r">'+dcMoney(x.montant||0)+'</td><td><span class="badge '+(stCls[x.action]||'bo')+'">'+escapeHtml(x.statut)+'</span></td><td style="max-width:260px;white-space:pre-wrap">'+(x.comment?escapeHtml(x.comment):'—')+'</td></tr>';
+  }).join('');
+  return '<details class="tbl-wrap" style="padding:10px 14px;margin:14px 0"><summary style="cursor:pointer;font-weight:700">📜 Historique permanent des attachements ('+H.length+' événement'+(H.length>1?'s':'')+')</summary>'+
+    '<div style="font-size:11px;color:var(--g3);margin:8px 0">Chaque transmission, validation ou retour pour correction est conservé ici définitivement, avec son commentaire propre — rien n\'est jamais écrasé ni supprimé.</div>'+
+    '<div style="overflow:auto"><table><thead><tr><th>N°</th><th>Date</th><th>Mois</th><th>Lot(s)</th><th>Entreprise</th><th class="r">Articles</th><th class="r">Montant</th><th>Statut</th><th>Commentaire</th></tr></thead><tbody>'+rows+'</tbody></table></div></details>';
 }
 function rValidation(){
   const s = attStore(); const ks = Object.keys(s).map(Number).sort((a,b)=>a-b); const months = P.months||[];
