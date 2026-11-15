@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-14';
+    var __OT_BUILD = '2026-11-15';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -5341,6 +5341,25 @@ function tsEff(){ return (P.ts||[]).filter(avOK); }
 function tcEff(){ return (P.tc||[]).filter(avOK); }
 function tdEff(){ return (P.td||[]).filter(avOK); }
 function pvEff(){ return (P.pv||[]).filter(avOK); }
+// ── Quantité mensuelle d'un Travail Complémentaire (TC) : comme un article du DQE, un TC peut être
+// réalisé progressivement sur plusieurs mois. t.qty reste le plafond contractuel ("Qté Marché" —
+// la quantité validée par l'avenant) ; t.m[] porte la quantité réalisée CHAQUE mois.
+// Migration rétro-compatible : un ancien TC sans t.m voit son unique quantité placée dans le mois
+// où il avait été enregistré (t.mois), pour ne rien perdre des données déjà saisies.
+function tcQM(t){
+  var n = (P.months||[]).length || 1;
+  if(!Array.isArray(t.m)){
+    t.m = new Array(n).fill(0);
+    var mi0 = parseInt(t.mois); if(!isNaN(mi0) && mi0>=0 && mi0<n) t.m[mi0] = t.qty||0;
+  }
+  while(t.m.length < n) t.m.push(0);
+  return t.m;
+}
+function tcQCum(t, uptoMi){
+  var m = tcQM(t), s=0;
+  for(var i=0;i<=uptoMi && i<m.length;i++) s += (m[i]||0);
+  return Math.min(s, t.qty||0); // la quantité cumulée ne peut jamais dépasser la Qté Marché (plafond de l'avenant)
+}
 // ── Montant "extra-bordereau" d'un lot pour un mois donné : Travaux Complémentaires (TC) validés
 // + Plus-values sur prix (PV type "prix") formalisées par avenant signé. Ces éléments n'ont pas de
 // quantité d'article associée (contrairement aux TS / PV sur quantité / TD, déjà intégrés via
@@ -5348,10 +5367,22 @@ function pvEff(){ return (P.pv||[]).filter(avOK); }
 // s'ils ne sont pas ajoutés explicitement ici.
 function tcPvExtraItems(lotId, mi){
   var out = [];
-  tcEff().filter(function(t){ return t.lot===lotId && t.statut==='valide' && parseInt(t.mois)===mi; })
-    .forEach(function(t){ out.push({lbl:'TC — '+(t.des||t.ref||'Travaux complémentaires'), mnt:(t.qty||0)*(t.pu||0), av:t.av||'', mois:mi}); });
+  tcEff().filter(function(t){ return t.lot===lotId && t.statut==='valide'; })
+    .forEach(function(t){
+      var cCur = tcQCum(t, mi), cPrev = mi>0 ? tcQCum(t, mi-1) : 0, qMois = Math.max(0, cCur-cPrev), pu = t.pu||0;
+      out.push({
+        kind:'tc', lbl:'TC — '+(t.des||t.ref||'Travaux complémentaires'), num:t.ref||'', des:t.des||'', u:t.unit||'',
+        qMarche:t.qty||0, qPrev:cPrev, qMois:qMois, qCum:cCur, pu:pu,
+        mntPrev:dcR2(cPrev*pu), mntMois:dcR2(qMois*pu), mntCum:dcR2(cCur*pu), mnt:dcR2(qMois*pu),
+        av:t.av||'', mois:mi
+      });
+    });
   pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix' && parseInt(t.mois)===mi; })
-    .forEach(function(t){ out.push({lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), mnt:(t.mPV||0), av:t.av||'', mois:mi}); });
+    .forEach(function(t){
+      var m2 = t.mPV||0;
+      out.push({kind:'pv', lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), num:'', des:t.des||'', u:'',
+        qMarche:0, qPrev:0, qMois:0, qCum:0, pu:0, mntPrev:0, mntMois:m2, mntCum:m2, mnt:m2, av:t.av||'', mois:mi});
+    });
   return out;
 }
 function tcPvExtraMois(lotId, mi){ return tcPvExtraItems(lotId, mi).reduce(function(s,e){ return s+e.mnt; }, 0); }
@@ -6584,7 +6615,7 @@ function saveTC(){
   if(qty<=0 || pu<=0){ toast('Erreur : Quantité et PU doivent être >0','err'); return; }
   const tcItem = { lot, ref: ref || `TC-${Date.now().toString(36)}`, des, unit, qty, pu, mois, statut, obs };
   const isEdit = EDIT_TC_INDEX !== null && P.tc[EDIT_TC_INDEX];
-  if(isEdit) P.tc[EDIT_TC_INDEX] = tcItem;
+  if(isEdit){ tcItem.m = P.tc[EDIT_TC_INDEX].m; P.tc[EDIT_TC_INDEX] = tcItem; } // conserve la progression mensuelle déjà saisie
   else P.tc.push(tcItem);
   logJournal('tc', isEdit?'modification':'creation', `Lot ${lot} — "${des.substring(0,60)}" : ${N2(qty)} ${unit} × ${DA(pu)} = ${DA(qty*pu)}`);
   saveAll();
@@ -6592,6 +6623,7 @@ function saveTC(){
   toast('TC enregistré — à inclure dans le prochain avenant (page Avenants)', 'ok', 4000);
   renderApp();
 }
+function onQtyTC(i, mi, v){ if(!canEdit()) return; const t=P.tc && P.tc[i]; if(!t) return; const m=tcQM(t); m[mi]=Math.max(0,parseFloat(v)||0); saveAll(); toast('Quantité TC du mois enregistrée'); }
 function deleteTC(i){ if(confirm('Supprimer ce TC ?')){ const t=P.tc[i]; logJournal('tc','suppression', `Lot ${t.lot} — "${(t.des||'').substring(0,60)}" (${DA((t.qty||0)*(t.pu||0))})`); P.tc.splice(i,1); saveAll(); renderApp(); toast('TC supprimé','ok'); } }
 
 // TS
@@ -7624,8 +7656,11 @@ function avArt(lot, a){
   return {tsQ:tsQ, tsM:tsM, pvQ:pvQ, pvQM:pvQM, pvPM:pvPM, tdQ:tdQ, tdM:tdM, chg:chg, newQ:newQ, newM:newM, badge:badge, pend:pend};
 }
 function avLotExtras(lot){
-  const out = []; const id = lot.id; const arts = lot.articles||[];
-  tcEff().filter(function(t){ return t.lot===id && t.statut==='valide'; }).forEach(function(t){ out.push({k:'TC', ref:t.ref||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:(t.qty||0)*(t.pu||0), av:t.av||''}); });
+  const out = []; const id = lot.id; const arts = lot.articles||[]; const mi = P.moisIdx||0;
+  tcEff().filter(function(t){ return t.lot===id && t.statut==='valide'; }).forEach(function(t){
+    const qCum = tcQCum(t, mi), qPrev = mi>0 ? tcQCum(t, mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
+    out.push({k:'TC', ref:t.ref||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:(t.qty||0)*(t.pu||0), av:t.av||'', qMois:qMois, qCum:qCum});
+  });
   tsEff().filter(function(t){ return t.lot===id && !arts.some(function(a){ return avMatch(t,id,a); }); }).forEach(function(t){ out.push({k:'TS', ref:t.art||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:t.mTS||((t.qty||0)*(t.pu||0)), av:t.av||''}); });
   return out;
 }
@@ -10223,7 +10258,7 @@ function rLots(){
         <td class="r"><span style="color:var(--g2)">—</span></td>
         <td class="r"><span style="color:var(--g2)">—</span></td>
         <td class="r"><span style="color:var(--g2)">—</span></td>
-        ${!ro?`<td style="white-space:nowrap"><div style="display:flex;gap:4px;justify-content:flex-end"><button class="btn bot bsm" onclick="openEdit('${lot.id}',${ai})" style="padding:3px 7px">Modifier</button><button class="btn bot bsm" onclick="toggleDesengageArticle('${lot.id}',${ai})" style="padding:3px 7px" title="Réengager cet article dans le budget actif">Réengager</button></div></td>`:''}
+        ${!ro?`<td style="white-space:nowrap"><div style="display:flex;gap:4px;justify-content:flex-end"><button class="btn bot bsm" onclick="toggleDesengageArticle('${lot.id}',${ai})" style="padding:3px 7px" title="Réengager cet article dans le budget actif">Réengager</button></div></td>`:''}
       </tr>`;
       continue;
     }
@@ -10243,7 +10278,11 @@ function rLots(){
   const ex = avLotExtras(lot);
   if(ex.length){
     html+=`<tr style="background:var(--nv3);cursor:default"><td colspan="${!canEdit()?9:10}" style="padding:9px 14px;font-size:12px;font-weight:700;color:var(--gd)">Travaux ajoutés par avenant signé (TC / TS hors DQE)</td></tr>`;
-    ex.forEach(function(e){ html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r"><span style="color:var(--g2)">—</span></td><td class="r"><span style="color:var(--g2)">—</span></td><td class="r"><span style="color:var(--g2)">—</span></td>${!canEdit()?'':'<td></td>'}</tr>`; });
+    ex.forEach(function(e){
+      const hasM = e.k==='TC';
+      const pctE = hasM && e.q>0 ? Math.min(100, e.qCum/e.q*100) : null;
+      html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r">${hasM?N2(e.qMois):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${hasM?N2(e.qCum):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${pctE!==null?pctE.toFixed(0)+'%':'<span style="color:var(--g2)">—</span>'}</td>${!canEdit()?'':'<td>'+(hasM?'<span style="font-size:9.5px;color:var(--g3)">Remplir dans Trav. Complémentaires</span>':'')+'</td>'}</tr>`;
+    });
   }
   html+=`</tbody></table></div>`;
   return html;
@@ -10444,7 +10483,7 @@ function rTS(){
     if(totalAutoNonFormalise>0){
       h+=`<div class="alert aw" style="margin-bottom:16px"><span>i</span><div>Les lignes <strong>"Auto"</strong> (fond orange ci-dessous) sont des dépassements détectés automatiquement (quantité réalisée > quantité marché) — <strong>à titre d'alerte uniquement, elles ne sont pas comptées dans le total officiel ni dans le % ci-dessus</strong>, pour rester cohérent avec le Récapitulatif et le Tableau de Bord. Cliquez sur <strong>"Ajouter TS"</strong> pour les formaliser officiellement avec une justification ; une fois formalisée, la ligne Auto correspondante est marquée "Déjà formalisé" et le montant rejoint alors le total officiel.</div></div>`;
     }
-    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Désignation</th><th>U</th><th class="r">Qté</th><th class="r">PU HT</th><th class="r">Montant HT</th><th class="r">% Marché</th><th>Mois</th><th>Source</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
+    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Désignation</th><th>U</th><th class="r">Qté Marché</th><th class="r">PU HT</th><th class="r">Budget HT</th><th class="r">% Marché</th><th>Mois</th><th>Source</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
     tsAuto.forEach(function(t){
       const pct = g.budget>0?(t.mTS/g.budget*100):0;
       const rowStyle = t.dejaFormalise ? 'opacity:0.55' : 'background:var(--or2)';
@@ -10492,18 +10531,21 @@ function rTC(){
     if(totalTCEnAttente>0){
       h+=`<div class="alert aw" style="margin-bottom:16px"><span>i</span><div>Seuls les TC au statut <strong>"Validé"</strong> comptent dans le total officiel et le Marché Actualisé — les TC "En cours", "Réalisé" ou "En attente" restent visibles mais ne sont pas encore acquis financièrement, comme pour un avenant non signé.</div></div>`;
     }
-    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Réf</th><th>Désignation</th><th>U</th><th class="r">Qté</th><th class="r">PU HT</th><th class="r">Montant HT</th><th class="r">% Marché</th><th>Mois</th><th>Statut</th><th>Obs</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
+    const roTC = !canEdit();
+    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Réf</th><th>Désignation</th><th>U</th><th class="r">Qté Marché</th><th class="r">PU HT</th><th class="r">Budget HT</th><th class="r">Qté '+escapeHtml(P.months[P.moisIdx]||'Mois')+'</th><th class="r">Qté Cum.</th><th class="r">% Marché</th><th>Statut</th><th>Obs</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
     tcList.forEach(function(t,i){
       const mnt=(t.qty||0)*(t.pu||0);
       const pct=g.budgetInitial>0?(mnt/g.budgetInitial*100):0;
       const nonValide = t.statut!=='valide';
-      h+=`<tr style="${nonValide?'opacity:0.6':''}"><td>${escapeHtml(t.lot)}</td><td>${escapeHtml(t.ref||'')}</td><td>${escapeHtml(t.des)}${avBadgeFor(t)}</td><td>${escapeHtml(t.unit||'')}</td><td class="r">${N2(t.qty||0)}</td><td class="r">${DA(t.pu||0)}</td><td class="r" style="color:${nonValide?'var(--g3)':'var(--gn)'}"><strong>${DA(mnt)}</strong></td><td class="r">${pct.toFixed(2)}%</td><td>${P.months[t.mois]||''}</td><td>${statutBadge[t.statut]||statutBadge.en_cours}</td><td style="max-width:160px;font-size:11px">${escapeHtml(t.obs||'')}</td>${canEdit()?`<td><button class="btn bot bsm" onclick="editTC(${i})">Modifier</button><button class="btn bdn bsm" onclick="deleteTC(${i})">Supprimer</button></td>`:''}</tr>`;
+      const qCum = tcQCum(t, P.moisIdx);
+      h+=`<tr style="${nonValide?'opacity:0.6':''}"><td>${escapeHtml(t.lot)}</td><td>${escapeHtml(t.ref||'')}</td><td>${escapeHtml(t.des)}${avBadgeFor(t)}</td><td>${escapeHtml(t.unit||'')}</td><td class="r">${N2(t.qty||0)}</td><td class="r">${DA(t.pu||0)}</td><td class="r" style="color:${nonValide?'var(--g3)':'var(--gn)'}"><strong>${DA(mnt)}</strong></td><td class="r"><input type="number" value="${(tcQM(t)[P.moisIdx]||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${roTC?'readonly':''} onchange="onQtyTC(${i},${P.moisIdx},this.value)"></td><td class="r">${N2(qCum)}${t.qty>0?` <span style="font-size:10px;color:var(--g3)">(${Math.min(100,qCum/t.qty*100).toFixed(0)}%)</span>`:''}</td><td class="r">${pct.toFixed(2)}%</td><td>${statutBadge[t.statut]||statutBadge.en_cours}</td><td style="max-width:160px;font-size:11px">${escapeHtml(t.obs||'')}</td>${canEdit()?`<td><button class="btn bot bsm" onclick="editTC(${i})">Modifier</button><button class="btn bdn bsm" onclick="deleteTC(${i})">Supprimer</button></td>`:''}</tr>`;
     });
-    h+=`<tr style="background:var(--sd2);font-weight:700"><td colspan="6">TOTAL TC OFFICIEL (validé)</td><td class="r" style="color:var(--gn)">${DA(totalTC)}</td><td class="r" style="color:${couleurPct}">${pctTC.toFixed(2)}%</td><td colspan="${canEdit()?'4':'3'}"></td></tr>`;
+    h+=`<tr style="background:var(--sd2);font-weight:700"><td colspan="6">TOTAL TC OFFICIEL (validé)</td><td class="r" style="color:var(--gn)">${DA(totalTC)}</td><td></td><td></td><td class="r" style="color:${couleurPct}">${pctTC.toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
     if(totalTCEnAttente>0){
-      h+=`<tr style="color:var(--g3)"><td colspan="6">dont TC en attente de validation (info, non inclus)</td><td class="r">${DA(totalTCEnAttente)}</td><td class="r">${(g.budgetInitial>0?(totalTCEnAttente/g.budgetInitial*100):0).toFixed(2)}%</td><td colspan="${canEdit()?'4':'3'}"></td></tr>`;
+      h+=`<tr style="color:var(--g3)"><td colspan="6">dont TC en attente de validation (info, non inclus)</td><td class="r">${DA(totalTCEnAttente)}</td><td></td><td></td><td class="r">${(g.budgetInitial>0?(totalTCEnAttente/g.budgetInitial*100):0).toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
     }
     h+='</tbody></table></div>';
+    h+=`<div style="font-size:11px;color:var(--g3);margin-top:8px">La "Qté Marché" est le plafond validé par l'avenant ; la "Qté du mois" se remplit comme pour un article du DQE et alimente automatiquement la Qté Cumulée (plafonnée à la Qté Marché) ainsi que les Situations/Attachements/Dossier de situation.</div>`;
   }
   return h;
 }
@@ -11248,9 +11290,14 @@ function otSpecSituation(k){
   secs.push({heading:'Situation des travaux par lot', cols:[{h:'Lot',t:'c',w:16},{h:'Désignation',t:'t'},{h:'Marché HT',t:'m'},{h:'Antérieur HT',t:'m'},{h:'Mois HT',t:'m'},{h:'Cumul HT',t:'m'},{h:'% Avmt',t:'p',w:20}],
     rows: lots.map(l=>({c:[l.id,l.nom,l.marche,l.prev,l.mois,l.cumul,l.pct]})).concat([{k:'tot',c:['','TOTAL HT',dcR2(T.m),dcR2(T.p),ht,cumHT,T.m>0?T.c/T.m*100:0]}])});
   const tcPvRows = [];
-  P.lots.forEach(function(lot){ tcPvExtraItems(lot.id, k).forEach(function(e){ tcPvRows.push({c:[lot.id, e.lbl, e.av ? (e.av+(avSigned(e.av)?' · signé':' · non signé')) : 'sans avenant', e.mnt]}); }); });
-  if(tcPvRows.length) secs.push({heading:'Dont Travaux Complémentaires (TC) et Plus-values sur prix formalisés par avenant (mois de '+mois+')',
-    cols:[{h:'Lot',t:'c',w:16},{h:'Désignation',t:'t'},{h:'Avenant',t:'t',w:30},{h:'Montant HT',t:'m',w:28}], rows: tcPvRows});
+  P.lots.forEach(function(lot){
+    tcPvExtraItems(lot.id, k).filter(function(e){ return e.mntCum>0; }).forEach(function(e){
+      const avTxt = e.av ? (e.av+(avSigned(e.av)?' · signé':' · non signé')) : 'sans avenant';
+      tcPvRows.push({c:[e.num||'', lot.id+' — '+e.lbl+' ('+avTxt+')', e.u||'', e.qMarche||0, e.qPrev||0, e.qMois||0, e.qCum||0, dcR2(e.mntMois), dcR2(e.mntCum)]});
+    });
+  });
+  if(tcPvRows.length) secs.push({heading:'Détail des modifications (Travaux Complémentaires / Plus-values sur prix) formalisées par avenant — à fin '+mois,
+    cols:[{h:'N°',t:'c',w:14},{h:'Désignations Des Articles',t:'t'},{h:'U',t:'c',w:10},{h:'Qté Marché',t:'q',w:18},{h:'Qté Précédente',t:'q',w:18},{h:'Qté du Mois',t:'q',w:18},{h:'Qté Cumulée',t:'q',w:18},{h:'Montant du Mois HT',t:'m',w:26},{h:'Montant Cumulé HT',t:'m',w:26}], rows: tcPvRows});
   secs.push({heading:'Montant de la situation de '+mois, cols:[{h:'Désignation',t:'t'},{h:'Montant ('+getDevise()+')',t:'m',w:60}],
     rows:(rv ? [{c:['Montant HT des travaux du mois',ht0]},{c:['Révision des prix du mois (K = '+revMois(k).K.toFixed(4)+')',rv]}] : []).concat([{c:[rv ? 'Montant HT du mois (révisé)' : 'Montant HT du mois',ht]},{c:['TVA '+(tvaR*100).toFixed(0)+' %',tva]},{k:'fin',c:['MONTANT TTC DE LA SITUATION',ttc]}]).concat(garLignesSit(ht)).concat([{k:'info',c:['Cumul HT à fin '+mois,cumHT]},{k:'info',c:['Cumul TTC à fin '+mois,cumTTC]}])});
   const cum = []; let cu = 0; const showLots = P.lots.length <= 6;
@@ -11277,17 +11324,16 @@ function otSpecAttachement(k, mode){
       sM += cur*p; sC += cum*p;
     }
     const extraCur = tcPvExtraMois(lot.id, k), extraCum = tcPvExtraCumul(lot.id, k);
-    const showExtra = mode==='mois' ? extraCur>0 : extraCum>0;
+    const extraItems = tcPvExtraItems(lot.id, k).filter(function(e){ return mode==='mois' ? e.mntMois>0 : e.mntCum>0; });
+    const showExtra = extraItems.length>0;
     if(!art.length && !showExtra) return;
     rows.push({k:'sec', c:['Lot '+lot.id+' — '+(lot.name||lot.nom||'')]});
     art.forEach(x=>rows.push(x));
     if(showExtra){
-      for(let mi=0; mi<=k; mi++){
-        tcPvExtraItems(lot.id, mi).forEach(function(e){
-          const isCur = mi===k;
-          rows.push({c:['', e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]'), '', '', '', '', '', '', '', dcR2(isCur?e.mnt:0), dcR2(e.mnt)]});
-        });
-      }
+      extraItems.forEach(function(e){
+        const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
+        rows.push({c:[e.num||'', lbl, e.u||'', e.pu||0, e.qMarche||0, e.qPrev||0, e.qMois||0, e.qCum||0, e.qMarche>0?Math.min(100,e.qCum/e.qMarche*100):0, dcR2(e.mntMois), dcR2(e.mntCum)]});
+      });
       sM += extraCur; sC += extraCum;
     }
     rows.push({k:'tot', c:['','Total lot '+lot.id,'','','','','','','',dcR2(sM),dcR2(sC)]});
@@ -11457,14 +11503,11 @@ async function mdBuildPDF(){
       }
       // Travaux Complémentaires (TC) validés + Plus-values sur prix, déjà formalisés par avenant signé
       if(withPrice && extraCum){
-        for(let mi=0; mi<=k; mi++){
-          tcPvExtraItems(lot.id, mi).forEach(function(e){
-            const isCur = mi===k, m2 = e.mnt, ante2 = isCur?0:m2, cur2 = isCur?m2:0;
-            const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
-            push(['', {content:lbl, styles:{fontStyle:'italic'}}, '', '', '', '', '', '', dcNum(ante2), {content:dcNum(cur2), styles:{fontStyle:'bold'}}, dcNum(m2)], 'art');
-            sI += ante2; sJ += cur2; sK += m2;
-          });
-        }
+        tcPvExtraItems(lot.id, k).filter(function(e){ return e.mntCum>0; }).forEach(function(e){
+          const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
+          push([e.num||'', {content:lbl, styles:{fontStyle:'italic'}}, e.u||'', dcNum(e.qMarche||0), dcNum(e.qPrev||0), {content:dcNum(e.qMois||0), styles:{fontStyle:'bold'}}, dcNum(e.qCum||0), dcNum(e.pu||0), dcNum(e.mntPrev), {content:dcNum(e.mntMois), styles:{fontStyle:'bold'}}, dcNum(e.mntCum)], 'art');
+          sI += e.mntPrev; sJ += e.mntMois; sK += e.mntCum;
+        });
       }
       lotTot.push({I:dcR2(sI),J:dcR2(sJ),K:dcR2(sK)});
       if(withPrice) push([{content:'S/Total (Lot '+lot.id+') '+lotName+' =', colSpan:8, styles:{halign:'right', fontStyle:'bolditalic'}}, dcNum(sI), dcNum(sJ), dcNum(sK)],'sub');
@@ -11655,21 +11698,35 @@ async function mdBuild(){
       r++;
     }
     // Travaux Complémentaires (TC) validés + Plus-values sur prix, déjà formalisés par avenant signé
-    // (pas de quantité d'article : montants seuls, feuille SIT uniquement)
+    // Un TC a une quantité (comme un article : Qté Marché/Précédente/du Mois/Cumulée) et apparaît
+    // donc sur les deux feuilles ATT et SIT ; une plus-value sur prix n'a pas de quantité et reste
+    // uniquement sur la feuille SIT (montant seul).
     let tExtra = 0;
     if(lotExtraCum){
-      for(let mi=0; mi<=k; mi++){
-        tcPvExtraItems(lot.id, mi).forEach(function(e){
-          const isCur = mi===k, m2 = e.mnt, ante2 = isCur?0:m2, cur2 = isCur?m2:0;
-          const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
-          sSit.mergeCells(r,1,r,2); boxRow(sSit,r,11);
-          const cB = sSit.getCell(r,1); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
-          const vals = [[9,ante2],[10,cur2],[11,m2]];
-          vals.forEach(function(v){ const c = sSit.getCell(r,v[0]); c.value = dcR2(v[1]); c.numFmt = NF; c.font = {name:TNR,size:9,bold:v[0]===10}; c.alignment={horizontal:'right',vertical:'middle'}; });
-          tExtra += m2;
-          r++;
+      tcPvExtraItems(lot.id, k).filter(function(e){ return e.mntCum>0; }).forEach(function(e){
+        const isTC = e.kind==='tc';
+        const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
+        [[sSit,11],[sAtt,7]].forEach(function(p){
+          const ws=p[0], n=p[1];
+          boxRow(ws,r,n);
+          if(isTC){
+            const cA = ws.getCell(r,1); if(e.num) cA.value = e.num; cA.font = {name:TNR,size:9}; cA.alignment = {horizontal:'center',vertical:'top'};
+            const cB = ws.getCell(r,2); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
+            const cC = ws.getCell(r,3); cC.value = e.u||''; cC.font={name:TNR,size:9}; cC.alignment={horizontal:'center',vertical:'middle'};
+            const cD = ws.getCell(r,4); cD.value = dcR2(e.qMarche); cD.numFmt=NF; cD.font={name:TNR,size:9}; cD.alignment={horizontal:'center',vertical:'middle'};
+            const cE = ws.getCell(r,5); cE.value = dcR2(e.qPrev); cE.numFmt=NF; cE.font={name:TNR,size:9}; cE.alignment={horizontal:'center',vertical:'middle'};
+            const cF = ws.getCell(r,6); cF.value = dcR2(e.qMois); cF.numFmt=NF; cF.font={name:TNR,size:9,bold:true}; cF.alignment={horizontal:'center',vertical:'middle'};
+            const cG = ws.getCell(r,7); cG.value = dcR2(e.qCum); cG.numFmt=NF; cG.font={name:TNR,size:9}; cG.alignment={horizontal:'center',vertical:'middle'};
+          } else {
+            ws.mergeCells(r,1,r,2);
+            const cB = ws.getCell(r,1); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
+          }
         });
-      }
+        const vals = [[9,e.mntPrev],[10,e.mntMois],[11,e.mntCum]];
+        vals.forEach(function(v){ const c = sSit.getCell(r,v[0]); c.value = dcR2(v[1]); c.numFmt = NF; c.font = {name:TNR,size:9,bold:v[0]===10}; c.alignment={horizontal:'right',vertical:'middle'}; });
+        tExtra += e.mntMois;
+        r++;
+      });
     }
     const endArt = r-1;
     // sous-total du lot (SIT) / ligne vide (ATT)
