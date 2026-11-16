@@ -5385,11 +5385,17 @@ function tcPvExtraItems(lotId, mi){
         av:t.av||'', mois:mi
       });
     });
-  pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix' && parseInt(t.mois)===mi; })
+  // Une plus-value sur prix est un évènement ponctuel (un seul mois de constat), mais son montant
+  // doit continuer à apparaître dans le CUMUL de chaque mois suivant (comme pour un article) — pas
+  // seulement le mois exact où elle a été saisie, sinon elle "disparaît" des Situations/Attachements
+  // des mois ultérieurs.
+  pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix' && (parseInt(t.mois)||0)<=mi; })
     .forEach(function(t){
-      var m2 = t.mPV||0;
+      var tm = parseInt(t.mois)||0, m2 = t.mPV||0;
       out.push({kind:'pv', lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), num:'', des:t.des||'', u:'',
-        qMarche:0, qPrev:0, qMois:0, qCum:0, pu:0, mntPrev:0, mntMois:m2, mntCum:m2, mnt:m2, av:t.av||'', mois:mi});
+        qMarche:0, qPrev:0, qMois:0, qCum:0, pu:0,
+        mntPrev: tm<mi ? m2 : 0, mntMois: tm===mi ? m2 : 0, mntCum: m2,
+        mnt: tm===mi ? m2 : 0, av:t.av||'', mois:mi});
     });
   return out;
 }
@@ -7671,7 +7677,7 @@ function avLotExtras(lot){
   const out = []; const id = lot.id; const arts = lot.articles||[]; const mi = P.moisIdx||0;
   tcEff().filter(function(t){ return t.lot===id && t.statut==='valide'; }).forEach(function(t){
     const qCum = tcQCum(t, mi), qPrev = mi>0 ? tcQCum(t, mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
-    out.push({k:'TC', ref:t.ref||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:(t.qty||0)*(t.pu||0), av:t.av||'', qMois:qMois, qCum:qCum});
+    out.push({k:'TC', ref:t.ref||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:(t.qty||0)*(t.pu||0), av:t.av||'', qMois:qMois, qCum:qCum, tcIdx:(P.tc||[]).indexOf(t)});
   });
   tsEff().filter(function(t){ return t.lot===id && !arts.some(function(a){ return avMatch(t,id,a); }); }).forEach(function(t){ out.push({k:'TS', ref:t.art||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:t.mTS||((t.qty||0)*(t.pu||0)), av:t.av||''}); });
   return out;
@@ -10293,7 +10299,8 @@ function rLots(){
     ex.forEach(function(e){
       const hasM = e.k==='TC';
       const pctE = hasM && e.q>0 ? Math.min(100, e.qCum/e.q*100) : null;
-      html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r">${hasM?N2(e.qMois):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${hasM?N2(e.qCum):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${pctE!==null?pctE.toFixed(0)+'%':'<span style="color:var(--g2)">—</span>'}</td>${!canEdit()?'':'<td>'+(hasM?'<span style="font-size:9.5px;color:var(--g3)">Remplir dans Trav. Complémentaires</span>':'')+'</td>'}</tr>`;
+      const qMoisCell = hasM ? `<input type="number" value="${(e.qMois||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${ro?'readonly':''} onchange="onQtyTC(${e.tcIdx},${P.moisIdx},this.value)">` : '<span style="color:var(--g2)">—</span>';
+      html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r">${qMoisCell}</td><td class="r">${hasM?N2(e.qCum):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${pctE!==null?pctE.toFixed(0)+'%':'<span style="color:var(--g2)">—</span>'}</td>${!canEdit()?'':'<td></td>'}</tr>`;
     });
   }
   html+=`</tbody></table></div>`;
