@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-15';
+    var __OT_BUILD = '2026-11-16';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -1278,6 +1278,9 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
     <div class="fr">
       <div class="fg"><label>Montant TS HT</label><input type="text" id="ts-mnt" readonly style="background:#eee;font-weight:700"></div>
       <div class="fg"><label>Mois de constat</label><select id="ts-mois"></select></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label>Statut</label><select id="ts-statut"><option value="en_cours">En cours</option><option value="realise">Réalisé</option><option value="valide">Validé</option><option value="en_attente">En attente</option></select></div>
     </div>
     <div id="ts-pct-bar" style="display:none;margin:-6px 0 10px;padding:10px 14px;border-radius:8px;background:var(--or2);border-left:4px solid var(--or)">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -5337,7 +5340,12 @@ function avRule(){ return !(CURRENT_PROJECT && CURRENT_PROJECT.avValidation === 
 function avSigned(num){ return !!num && (P.avenants||[]).some(function(a){ return a.num === num && a.statut === 'signe'; }); }
 function avOK(it){ return !avRule() || (!!it && !!it.av && avSigned(it.av)); }
 function isDes(a){ return !!(a && a.desengage && (!avRule() || (a.avDes && avSigned(a.avDes)))); }
-function tsEff(){ return (P.ts||[]).filter(avOK); }
+// Un TS n'est "officiel" (compté dans le budget actualisé) que si son avenant est signé ET que son
+// statut est "Validé" — exactement comme pour un TC. Par rétrocompatibilité, un TS déjà enregistré
+// avant l'ajout du statut (donc sans champ statut) est considéré "Validé" pour ne rien changer aux
+// données déjà saisies et validées.
+function tsReady(t){ return avOK(t) && (t.statut||'valide')==='valide'; }
+function tsEff(){ return (P.ts||[]).filter(tsReady); }
 function tcEff(){ return (P.tc||[]).filter(avOK); }
 function tdEff(){ return (P.td||[]).filter(avOK); }
 function pvEff(){ return (P.pv||[]).filter(avOK); }
@@ -6641,6 +6649,8 @@ function openTS(){
   document.getElementById('ts-obs').value = '';
   document.getElementById('ts-qref').value = '';
   document.getElementById('ts-qreal').value = '';
+  document.getElementById('ts-statut').value = 'en_cours';
+  document.getElementById('modal-ts').dataset.editIdx = '-1';
   updateTSArticles();
   document.getElementById('modal-ts').classList.remove('hidden');
 }
@@ -6688,9 +6698,10 @@ function saveTS(){
   const mois = parseInt(document.getElementById('ts-mois').value)||P.moisIdx;
   const obs = (document.getElementById('ts-obs').value||'').trim();
   const des = (document.getElementById('ts-des').value||'').trim() || `TS - ${(a.n||'').substring(0,80)}`;
+  const statut = document.getElementById('ts-statut').value || 'en_cours';
   if(qty<=0){ toast('Erreur : Quantité TS doit être > 0','err'); return; }
   const mTS = qty*pu;
-  const tsItem = { lot:lotId, des, art:a.num, artUid:a._uid, unit:a.u, qty, pu, mTS, mois, obs, date:new Date().toISOString() };
+  const tsItem = { lot:lotId, des, art:a.num, artUid:a._uid, unit:a.u, qty, pu, mTS, mois, statut, obs, date:new Date().toISOString() };
   if(!P.ts) P.ts=[];
   const editIdx = parseInt(document.getElementById('modal-ts').dataset.editIdx??'-1');
   const isEdit = editIdx>=0 && P.ts[editIdx];
@@ -6731,6 +6742,7 @@ function editTS(i){
   document.getElementById('ts-obs').value = ts.obs || '';
   document.getElementById('ts-qref').value = '';
   document.getElementById('ts-qreal').value = '';
+  document.getElementById('ts-statut').value = ts.statut || 'valide';
   updateTSMontant();
   // Stocker index en cours d'édition
   document.getElementById('modal-ts').dataset.editIdx = i;
@@ -7639,7 +7651,7 @@ function avMatch(t, lotId, a){ return !!a && t.lot === lotId && ((t.artUid && t.
 function avArt(lot, a){
   const q = a.q||0, p = a.p||0, id = lot.id; let tsQ=0, tsM=0, pvQ=0, pvQM=0, pvPM=0, tdQ=0, tdM=0, pend=0; const tags = {};
   const add = function(t, lbl){ if(t.av) tags[t.av] = 1; };
-  (P.ts||[]).filter(function(t){ return avMatch(t,id,a); }).forEach(function(t){ if(avOK(t)){ tsQ += t.qty||0; tsM += t.mTS||((t.qty||0)*(t.pu||0)); add(t); } else pend++; });
+  (P.ts||[]).filter(function(t){ return avMatch(t,id,a); }).forEach(function(t){ if(tsReady(t)){ tsQ += t.qty||0; tsM += t.mTS||((t.qty||0)*(t.pu||0)); add(t); } else pend++; });
   (P.pv||[]).filter(function(t){ return avMatch(t,id,a); }).forEach(function(t){ if(avOK(t)){ if(t.type==='prix') pvPM += t.mPV||0; else { pvQ += t.qty||0; pvQM += t.mPV||((t.qty||0)*(t.pu||0)); } add(t); } else pend++; });
   (P.td||[]).filter(function(t){ return tdMatchesArticle(t,id,a); }).forEach(function(t){ if(avOK(t)){ tdQ += t.qty||0; tdM += t.mTD||((t.qty||0)*(t.pu||0)); add(t); } else pend++; });
   const chg = !!(tsQ||tsM||pvQ||pvQM||pvPM||tdQ||tdM);
@@ -10462,6 +10474,8 @@ function rTS(){
   // entre cette page et le Récapitulatif (qui affichait 0 DA pour le même lot).
   const totalTS = g.ts;
   const pctTS = g.pctTS;
+  const totalTSEnAttente = tsManuel.filter(function(t){return (t.statut||'valide')!=='valide';}).reduce(function(s,t){return s+((t.qty||0)*(t.pu||0)||t.mTS||0);},0);
+  const statutBadge={en_cours:'<span class="badge bo">En cours</span>',realise:'<span class="badge bg">Réalisé</span>',valide:'<span class="badge bb">Validé</span>',refuse:'<span class="badge br">Refusé</span>',en_attente:'<span class="badge bo">En attente</span>'};
   const couleurPct = pctTS>=SEUIL?'var(--rd)':pctTS>=SEUIL*0.8?'var(--or)':'var(--gn)';
   let h=`<div class="sec-hdr"><h2>Travaux <span>Supplémentaires (TS)</span></h2>${canEdit()?'<button class="btn bdn" onclick="openTS()">Ajouter TS</button>':''}</div>`;
   h+=`<div class="chart-box" style="margin-bottom:16px;border-top:4px solid ${couleurPct}">
@@ -10483,7 +10497,7 @@ function rTS(){
     if(totalAutoNonFormalise>0){
       h+=`<div class="alert aw" style="margin-bottom:16px"><span>i</span><div>Les lignes <strong>"Auto"</strong> (fond orange ci-dessous) sont des dépassements détectés automatiquement (quantité réalisée > quantité marché) — <strong>à titre d'alerte uniquement, elles ne sont pas comptées dans le total officiel ni dans le % ci-dessus</strong>, pour rester cohérent avec le Récapitulatif et le Tableau de Bord. Cliquez sur <strong>"Ajouter TS"</strong> pour les formaliser officiellement avec une justification ; une fois formalisée, la ligne Auto correspondante est marquée "Déjà formalisé" et le montant rejoint alors le total officiel.</div></div>`;
     }
-    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Désignation</th><th>U</th><th class="r">Qté Marché</th><th class="r">PU HT</th><th class="r">Budget HT</th><th class="r">% Marché</th><th>Mois</th><th>Source</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
+    h+='<div class="tbl-wrap"><table><thead><tr><th>Lot</th><th>Désignation</th><th>U</th><th class="r">Qté Marché</th><th class="r">PU HT</th><th class="r">Budget HT</th><th class="r">% Marché</th><th>Mois</th><th>Statut</th>'+(canEdit()?'<th></th>':'')+'</tr></thead><tbody>';
     tsAuto.forEach(function(t){
       const pct = g.budget>0?(t.mTS/g.budget*100):0;
       const rowStyle = t.dejaFormalise ? 'opacity:0.55' : 'background:var(--or2)';
@@ -10492,9 +10506,14 @@ function rTS(){
     tsManuel.forEach(function(t,i){
       const mTS = (t.qty||0)*(t.pu||0) || (t.mTS||0);
       const pct = g.budget>0?(mTS/g.budget*100):0;
-      h+=`<tr><td>${escapeHtml(t.lot)}</td><td>${escapeHtml(t.des)}${avBadgeFor(t)}</td><td>${escapeHtml(t.unit||'')}</td><td class="r">${N2(t.qty||0)}</td><td class="r">${DA(t.pu||0)}</td><td class="r" style="color:var(--or)"><strong>${DA(mTS)}</strong></td><td class="r" style="color:var(--or)">${pct.toFixed(2)}%</td><td>${P.months[t.mois]||''}</td><td><span class="badge bn">Manuel (officiel)</span></td>${canEdit()?`<td><button class="btn bot bsm" onclick="editTS(${i})">Modifier</button><button class="btn bdn bsm" onclick="deleteTS(${i})">Supprimer</button></td>`:''}</tr>`;
+      const stKey = t.statut||'valide';
+      const nonValide = stKey!=='valide';
+      h+=`<tr style="${nonValide?'opacity:0.6':''}"><td>${escapeHtml(t.lot)}</td><td>${escapeHtml(t.des)}${avBadgeFor(t)}</td><td>${escapeHtml(t.unit||'')}</td><td class="r">${N2(t.qty||0)}</td><td class="r">${DA(t.pu||0)}</td><td class="r" style="color:${nonValide?'var(--g3)':'var(--or)'}"><strong>${DA(mTS)}</strong></td><td class="r" style="color:${nonValide?'var(--g3)':'var(--or)'}">${pct.toFixed(2)}%</td><td>${P.months[t.mois]||''}</td><td>${statutBadge[stKey]||statutBadge.en_cours}</td>${canEdit()?`<td><button class="btn bot bsm" onclick="editTS(${i})">Modifier</button><button class="btn bdn bsm" onclick="deleteTS(${i})">Supprimer</button></td>`:''}</tr>`;
     });
-    h+=`<tr style="background:var(--sd2);font-weight:700"><td colspan="5">TOTAL TS OFFICIEL (manuel)</td><td class="r">${DA(totalTS)}</td><td class="r" style="color:${couleurPct}">${pctTS.toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
+    h+=`<tr style="background:var(--sd2);font-weight:700"><td colspan="5">TOTAL TS OFFICIEL (validé)</td><td class="r">${DA(totalTS)}</td><td class="r" style="color:${couleurPct}">${pctTS.toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
+    if(totalTSEnAttente>0){
+      h+=`<tr style="color:var(--g3)"><td colspan="5">dont TS en attente de validation (info, non inclus)</td><td class="r">${DA(totalTSEnAttente)}</td><td class="r">${(g.budget>0?(totalTSEnAttente/g.budget*100):0).toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
+    }
     if(totalAutoNonFormalise>0){
       h+=`<tr style="color:var(--g3)"><td colspan="5">dont dépassements Auto non formalisés (info, non inclus)</td><td class="r">${DA(totalAutoNonFormalise)}</td><td class="r">${(g.budget>0?(totalAutoNonFormalise/g.budget*100):0).toFixed(2)}%</td><td colspan="${canEdit()?'3':'2'}"></td></tr>`;
     }
@@ -11319,7 +11338,7 @@ function otSpecAttachement(k, mode){
       if(!a||a.isSection||a.isGroup||a.isInfo||isDes(a)) continue;
       const m = artMonthly(lot,a); let ante=0; for(let i=0;i<k;i++) ante += (m[i]||0);
       const cur = m[k]||0, cum = ante+cur; if(mode==='mois' ? !cur : !cum) continue;
-      const p = a.p||0, q = a.q||0;
+      const p = a.p||0, q = Math.max(a.q||0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — ante/cur/cum (déjà réalisé) restent inchangés
       art.push({c:[a.num||'', a.n||'', a.u||'', p, q, ante, cur, cum, q>0?cum/q*100:0, dcR2(cur*p), dcR2(cum*p)]});
       sM += cur*p; sC += cum*p;
     }
@@ -11497,7 +11516,8 @@ async function mdBuildPDF(){
         if(a.isGroup){ const c = [a.num||'', {content:name, styles:{fontStyle:'bold'}}]; while(c.length<nc) c.push(''); push(c,'grp'); continue; }
         if(a.isInfo){ const c = ['', name]; while(c.length<nc) c.push(''); push(c,'info'); continue; }
         const m = artMonthly(lot,a); let ante=0; for(let i=0;i<k;i++) ante += (m[i]||0); const cur = m[k]||0, p0 = a.p||0;
-        const c = [a.isSubArticle?'':(a.num||''), (a.isSubArticle?'   ':'')+name, a.u||'', dcNum(a.q||0), dcNum(ante), {content:dcNum(cur), styles:{fontStyle:'bold'}}, dcNum(ante+cur)];
+        const qMarche = Math.max(a.q||0, avArt(lot,a).newQ||0); // quantité marché à jour des avenants signés (TS/PV/TD) — les quantités déjà réalisées (ante/cur) restent inchangées
+        const c = [a.isSubArticle?'':(a.num||''), (a.isSubArticle?'   ':'')+name, a.u||'', dcNum(qMarche), dcNum(ante), {content:dcNum(cur), styles:{fontStyle:'bold'}}, dcNum(ante+cur)];
         if(withPrice){ c.push(dcNum(p0), dcNum(p0*ante), {content:dcNum(p0*cur), styles:{fontStyle:'bold'}}, dcNum(p0*(ante+cur))); }
         push(c,'art'); sI+=p0*ante; sJ+=p0*cur; sK+=p0*(ante+cur);
       }
@@ -11678,7 +11698,7 @@ async function mdBuild(){
         const cB = ws.getCell(r,2); cB.value = name; cB.font = {name:TNR,size:10,bold: !!a.isGroup && false}; cB.alignment = {horizontal:'justify',vertical:'top',wrapText:true, indent: a.isSubArticle?2:0};
         if(hasFig){
           const cC = ws.getCell(r,3); cC.value = a.u||''; cC.font={name:TNR,size:10}; cC.alignment={horizontal:'center',vertical:'middle'};
-          const cD = ws.getCell(r,4); cD.value = a.q||0;
+          const cD = ws.getCell(r,4); cD.value = Math.max(a.q||0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — les quantités déjà réalisées (ante/cur) restent inchangées
           const cE = ws.getCell(r,5); cE.value = dcR2(ante);
           const cG = ws.getCell(r,7);
           if(ws===sAtt){ const cF = ws.getCell(r,6); cF.value = dcR2(cur); cF.font={name:TNR,size:10,bold:true}; }
