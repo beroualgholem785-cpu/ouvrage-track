@@ -10295,11 +10295,12 @@ function rLots(){
   }
   const ex = avLotExtras(lot);
   if(ex.length){
+    const roEx = !canEdit();
     html+=`<tr style="background:var(--nv3);cursor:default"><td colspan="${!canEdit()?9:10}" style="padding:9px 14px;font-size:12px;font-weight:700;color:var(--gd)">Travaux ajoutés par avenant signé (TC / TS hors DQE)</td></tr>`;
     ex.forEach(function(e){
       const hasM = e.k==='TC';
       const pctE = hasM && e.q>0 ? Math.min(100, e.qCum/e.q*100) : null;
-      const qMoisCell = hasM ? `<input type="number" value="${(e.qMois||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${ro?'readonly':''} onchange="onQtyTC(${e.tcIdx},${P.moisIdx},this.value)">` : '<span style="color:var(--g2)">—</span>';
+      const qMoisCell = hasM ? `<input type="number" value="${(e.qMois||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${roEx?'readonly':''} onchange="onQtyTC(${e.tcIdx},${P.moisIdx},this.value)">` : '<span style="color:var(--g2)">—</span>';
       html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r">${qMoisCell}</td><td class="r">${hasM?N2(e.qCum):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${pctE!==null?pctE.toFixed(0)+'%':'<span style="color:var(--g2)">—</span>'}</td>${!canEdit()?'':'<td></td>'}</tr>`;
     });
   }
