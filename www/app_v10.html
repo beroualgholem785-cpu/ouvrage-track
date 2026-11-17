@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-16';
+    var __OT_BUILD = '2026-11-17';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -5385,18 +5385,24 @@ function tcPvExtraItems(lotId, mi){
         av:t.av||'', mois:mi
       });
     });
-  // Une plus-value sur prix est un évènement ponctuel (un seul mois de constat), mais son montant
-  // doit continuer à apparaître dans le CUMUL de chaque mois suivant (comme pour un article) — pas
-  // seulement le mois exact où elle a été saisie, sinon elle "disparaît" des Situations/Attachements
-  // des mois ultérieurs.
-  pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix' && (parseInt(t.mois)||0)<=mi; })
-    .forEach(function(t){
-      var tm = parseInt(t.mois)||0, m2 = t.mPV||0;
-      out.push({kind:'pv', lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), num:'', des:t.des||'', u:'',
-        qMarche:0, qPrev:0, qMois:0, qCum:0, pu:0,
-        mntPrev: tm<mi ? m2 : 0, mntMois: tm===mi ? m2 : 0, mntCum: m2,
-        mnt: tm===mi ? m2 : 0, av:t.av||'', mois:mi});
-    });
+  // Une plus-value sur prix s'applique à l'article concerné : à partir du mois où le nouveau prix
+  // prend effet (t.mois), chaque quantité RÉELLEMENT saisie sur cet article dans Lots & Articles
+  // (Qté du mois) est valorisée à l'écart de prix (nouveau − ancien), plafonnée à la « quantité
+  // concernée par le nouveau prix » de l'avenant (t.qty, si renseignée). Le montant suit donc le mois
+  // exact où la quantité a été saisie — et non un montant fixe détaché de l'avancement réel.
+  pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix'; }).forEach(function(t){
+    var tm = parseInt(t.mois)||0; if(tm>mi) return;
+    var lotRef = (P.lots||[]).find(function(l){ return l.id===lotId; });
+    var artRef = lotRef ? (lotRef.articles||[]).find(function(x){ return x && ((t.artUid && x._uid===t.artUid) || (!t.artUid && x.num===t.art)); }) : null;
+    var delta = (t.pu||0)-(t.pu0||0);
+    var mArr = artRef ? (artRef.m||[]) : [];
+    var sumUpto = function(uptoMi){ var s=0; for(var i=tm;i<=uptoMi && i<mArr.length;i++) s += (mArr[i]||0); return t.qty>0 ? Math.min(s, t.qty) : s; };
+    var qCum = sumUpto(mi), qPrev = mi>0 ? sumUpto(mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
+    out.push({kind:'pv', lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), num:(artRef&&artRef.num)||'', des:t.des||'', u:t.unit||'',
+      qMarche:t.qty||0, qPrev:qPrev, qMois:qMois, qCum:qCum, pu:delta,
+      mntPrev:dcR2(qPrev*delta), mntMois:dcR2(qMois*delta), mntCum:dcR2(qCum*delta),
+      mnt:dcR2(qMois*delta), av:t.av||'', mois:mi});
+  });
   return out;
 }
 function tcPvExtraMois(lotId, mi){ return tcPvExtraItems(lotId, mi).reduce(function(s,e){ return s+e.mnt; }, 0); }
@@ -11346,7 +11352,7 @@ function otSpecAttachement(k, mode){
       if(!a||a.isSection||a.isGroup||a.isInfo||isDes(a)) continue;
       const m = artMonthly(lot,a); let ante=0; for(let i=0;i<k;i++) ante += (m[i]||0);
       const cur = m[k]||0, cum = ante+cur; if(mode==='mois' ? !cur : !cum) continue;
-      const p = a.p||0, q = Math.max(a.q||0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — ante/cur/cum (déjà réalisé) restent inchangés
+      const p = a.p||0, q = Math.max(0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — ante/cur/cum (déjà réalisé) restent inchangés
       art.push({c:[a.num||'', a.n||'', a.u||'', p, q, ante, cur, cum, q>0?cum/q*100:0, dcR2(cur*p), dcR2(cum*p)]});
       sM += cur*p; sC += cum*p;
     }
@@ -11524,7 +11530,7 @@ async function mdBuildPDF(){
         if(a.isGroup){ const c = [a.num||'', {content:name, styles:{fontStyle:'bold'}}]; while(c.length<nc) c.push(''); push(c,'grp'); continue; }
         if(a.isInfo){ const c = ['', name]; while(c.length<nc) c.push(''); push(c,'info'); continue; }
         const m = artMonthly(lot,a); let ante=0; for(let i=0;i<k;i++) ante += (m[i]||0); const cur = m[k]||0, p0 = a.p||0;
-        const qMarche = Math.max(a.q||0, avArt(lot,a).newQ||0); // quantité marché à jour des avenants signés (TS/PV/TD) — les quantités déjà réalisées (ante/cur) restent inchangées
+        const qMarche = Math.max(0, avArt(lot,a).newQ||0); // quantité marché à jour des avenants signés (TS/PV/TD) — les quantités déjà réalisées (ante/cur) restent inchangées
         const c = [a.isSubArticle?'':(a.num||''), (a.isSubArticle?'   ':'')+name, a.u||'', dcNum(qMarche), dcNum(ante), {content:dcNum(cur), styles:{fontStyle:'bold'}}, dcNum(ante+cur)];
         if(withPrice){ c.push(dcNum(p0), dcNum(p0*ante), {content:dcNum(p0*cur), styles:{fontStyle:'bold'}}, dcNum(p0*(ante+cur))); }
         push(c,'art'); sI+=p0*ante; sJ+=p0*cur; sK+=p0*(ante+cur);
@@ -11706,7 +11712,7 @@ async function mdBuild(){
         const cB = ws.getCell(r,2); cB.value = name; cB.font = {name:TNR,size:10,bold: !!a.isGroup && false}; cB.alignment = {horizontal:'justify',vertical:'top',wrapText:true, indent: a.isSubArticle?2:0};
         if(hasFig){
           const cC = ws.getCell(r,3); cC.value = a.u||''; cC.font={name:TNR,size:10}; cC.alignment={horizontal:'center',vertical:'middle'};
-          const cD = ws.getCell(r,4); cD.value = Math.max(a.q||0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — les quantités déjà réalisées (ante/cur) restent inchangées
+          const cD = ws.getCell(r,4); cD.value = Math.max(0, avArt(lot,a).newQ||0); // Qté Marché à jour des avenants signés — les quantités déjà réalisées (ante/cur) restent inchangées
           const cE = ws.getCell(r,5); cE.value = dcR2(ante);
           const cG = ws.getCell(r,7);
           if(ws===sAtt){ const cF = ws.getCell(r,6); cF.value = dcR2(cur); cF.font={name:TNR,size:10,bold:true}; }
@@ -11727,28 +11733,23 @@ async function mdBuild(){
     }
     // Travaux Complémentaires (TC) validés + Plus-values sur prix, déjà formalisés par avenant signé
     // Un TC a une quantité (comme un article : Qté Marché/Précédente/du Mois/Cumulée) et apparaît
-    // donc sur les deux feuilles ATT et SIT ; une plus-value sur prix n'a pas de quantité et reste
-    // uniquement sur la feuille SIT (montant seul).
+    // donc sur les deux feuilles ATT et SIT, avec le détail de leurs quantités mensuelles
+    // (Qté Marché/Précédente/du Mois/Cumulée) — une plus-value sur prix suit désormais la quantité
+    // réellement saisie sur l'article concerné, exactement comme un TC.
     let tExtra = 0;
     if(lotExtraCum){
       tcPvExtraItems(lot.id, k).filter(function(e){ return e.mntCum>0; }).forEach(function(e){
-        const isTC = e.kind==='tc';
         const lbl = e.lbl+(e.av?' ['+e.av+(avSigned(e.av)?' signé':' non signé')+']':' [en attente d\'avenant]');
         [[sSit,11],[sAtt,7]].forEach(function(p){
           const ws=p[0], n=p[1];
           boxRow(ws,r,n);
-          if(isTC){
-            const cA = ws.getCell(r,1); if(e.num) cA.value = e.num; cA.font = {name:TNR,size:9}; cA.alignment = {horizontal:'center',vertical:'top'};
-            const cB = ws.getCell(r,2); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
-            const cC = ws.getCell(r,3); cC.value = e.u||''; cC.font={name:TNR,size:9}; cC.alignment={horizontal:'center',vertical:'middle'};
-            const cD = ws.getCell(r,4); cD.value = dcR2(e.qMarche); cD.numFmt=NF; cD.font={name:TNR,size:9}; cD.alignment={horizontal:'center',vertical:'middle'};
-            const cE = ws.getCell(r,5); cE.value = dcR2(e.qPrev); cE.numFmt=NF; cE.font={name:TNR,size:9}; cE.alignment={horizontal:'center',vertical:'middle'};
-            const cF = ws.getCell(r,6); cF.value = dcR2(e.qMois); cF.numFmt=NF; cF.font={name:TNR,size:9,bold:true}; cF.alignment={horizontal:'center',vertical:'middle'};
-            const cG = ws.getCell(r,7); cG.value = dcR2(e.qCum); cG.numFmt=NF; cG.font={name:TNR,size:9}; cG.alignment={horizontal:'center',vertical:'middle'};
-          } else {
-            ws.mergeCells(r,1,r,2);
-            const cB = ws.getCell(r,1); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
-          }
+          const cA = ws.getCell(r,1); if(e.num) cA.value = e.num; cA.font = {name:TNR,size:9}; cA.alignment = {horizontal:'center',vertical:'top'};
+          const cB = ws.getCell(r,2); cB.value = lbl; cB.font = {name:TNR,size:9,italic:true}; cB.alignment = {horizontal:'left',vertical:'middle',wrapText:true};
+          const cC = ws.getCell(r,3); cC.value = e.u||''; cC.font={name:TNR,size:9}; cC.alignment={horizontal:'center',vertical:'middle'};
+          const cD = ws.getCell(r,4); cD.value = dcR2(e.qMarche); cD.numFmt=NF; cD.font={name:TNR,size:9}; cD.alignment={horizontal:'center',vertical:'middle'};
+          const cE = ws.getCell(r,5); cE.value = dcR2(e.qPrev); cE.numFmt=NF; cE.font={name:TNR,size:9}; cE.alignment={horizontal:'center',vertical:'middle'};
+          const cF = ws.getCell(r,6); cF.value = dcR2(e.qMois); cF.numFmt=NF; cF.font={name:TNR,size:9,bold:true}; cF.alignment={horizontal:'center',vertical:'middle'};
+          const cG = ws.getCell(r,7); cG.value = dcR2(e.qCum); cG.numFmt=NF; cG.font={name:TNR,size:9}; cG.alignment={horizontal:'center',vertical:'middle'};
         });
         const vals = [[9,e.mntPrev],[10,e.mntMois],[11,e.mntCum]];
         vals.forEach(function(v){ const c = sSit.getCell(r,v[0]); c.value = dcR2(v[1]); c.numFmt = NF; c.font = {name:TNR,size:9,bold:v[0]===10}; c.alignment={horizontal:'right',vertical:'middle'}; });
