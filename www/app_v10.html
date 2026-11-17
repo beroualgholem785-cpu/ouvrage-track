@@ -2935,6 +2935,12 @@ function genererAvenantExcel() {
   // exactement comme dans le classeur modèle fourni : "nouveau marché" / "supplémentaire" / "complémentaire" / "déduires").
   function construireFeuille(titre3) {
     var aoa = [], merges = [];
+    // Cette feuille (Nouveau March\u00e9) a une colonne de plus que les autres : "Montant PV" (plus-values
+    // sur prix / quantit\u00e9), ins\u00e9r\u00e9e avant "Montant Nouveau March\u00e9". NCOLS/cw sont donc red\u00e9finies en
+    // local ici (elles masquent celles du scope englobant) pour ne pas affecter les autres feuilles.
+    var NCOLS = 15;
+    var cw = [{ wch: 8 }, { wch: 50 }, { wch: 6 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    function blankRow() { return new Array(NCOLS).fill(''); }
 
     var r0 = blankRow(); r0[0] = { v: OBJET, t: 's', s: { font: { bold: true, sz: 11, name: 'Arial' }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true } } };
     aoa.push(r0); merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: NCOLS - 1 } });
@@ -2949,16 +2955,16 @@ function genererAvenantExcel() {
       hdrCell('N\u00b0'), hdrCell('D\u00e9signation'), hdrCell('Unit\u00e9'),
       hdrCell('Quantit\u00e9 March\u00e9'), hdrCell('Quantit\u00e9 Suppl\u00e9mentaire'), hdrCell('Quantit\u00e9 Compl\u00e9mentaire'), hdrCell('Quantit\u00e9 \u00e0 D\u00e9duire'),
       hdrCell('Nouvelle Quantit\u00e9 March\u00e9'), hdrCell('Prix Unitaire'),
-      hdrCell('Montant March\u00e9'), hdrCell('Montant TS'), hdrCell('Montant TC'), hdrCell('Montant TD'), hdrCell('Montant Nouveau March\u00e9')
+      hdrCell('Montant March\u00e9'), hdrCell('Montant TS'), hdrCell('Montant TC'), hdrCell('Montant TD'), hdrCell('Montant Plus-value'), hdrCell('Montant Nouveau March\u00e9')
     ]);
 
-    var totMarche = 0, totTS = 0, totTC = 0, totTD = 0, totNouveau = 0;
+    var totMarche = 0, totTS = 0, totTC = 0, totTD = 0, totPV = 0, totNouveau = 0;
 
-    function totalRow(label, mM, mS, mC, mD, mN, fill, color, sz) {
+    function totalRow(label, mM, mS, mC, mD, mPVv, mN, fill, color, sz) {
       var row = blankRow();
       row[0] = { v: label, t: 's', s: { font: { bold: true, sz: sz || 10, name: 'Arial', color: { rgb: color } }, fill: { fgColor: { rgb: fill }, patternType: 'solid' }, alignment: { horizontal: 'right', vertical: 'center' }, border: { top: { style: 'medium' }, bottom: { style: 'medium' }, left: { style: 'medium' }, right: { style: 'medium' } } } };
       for (var i = 1; i <= 8; i++) row[i] = { v: '', t: 's', s: { fill: { fgColor: { rgb: fill }, patternType: 'solid' }, border: { top: { style: 'medium' }, bottom: { style: 'medium' }, left: { style: 'medium' }, right: { style: 'medium' } } } };
-      row[9] = mntCell(mM, true, color, fill); row[10] = mntCell(mS, true, color, fill); row[11] = mntCell(mC, true, color, fill); row[12] = mntCell(mD, true, color, fill); row[13] = mntCell(mN, true, color, fill);
+      row[9] = mntCell(mM, true, color, fill); row[10] = mntCell(mS, true, color, fill); row[11] = mntCell(mC, true, color, fill); row[12] = mntCell(mD, true, color, fill); row[13] = mntCell(mPVv, true, color, fill); row[14] = mntCell(mN, true, color, fill);
       return row;
     }
 
@@ -2970,7 +2976,7 @@ function genererAvenantExcel() {
       aoa.push(rowLot);
       merges.push({ s: { r: rIdx, c: 1 }, e: { r: rIdx, c: NCOLS - 1 } });
 
-      var lotMarche = 0, lotTS = 0, lotTC = 0, lotTD = 0, lotNouveau = 0;
+      var lotMarche = 0, lotTS = 0, lotTC = 0, lotTD = 0, lotPV = 0, lotNouveau = 0;
 
       (lot.articles || []).forEach(function (a) {
         if (a.isSection || a.isGroup) {
@@ -2998,11 +3004,20 @@ function genererAvenantExcel() {
           mTD = tdEntries.reduce(function (s, t) { return s + (t.mTD || ((t.qty || 0) * (t.pu || 0))); }, 0);
         }
         var qTC = 0, mTC = 0;
-        if (qMarche === 0 && qTS === 0 && qTD === 0) return; // rien à signaler pour cet article : pas d'avenant le concernant
+        // Plus-values (sur prix ou sur quantité) concernant cet article : valeur plafond de l'avenant
+        // (quantité concernée × écart de prix pour une PV sur prix ; montant enregistré pour une PV
+        // sur quantité), cumulée toutes PV confondues — cohérent avec le reste du document (TS/TC/TD
+        // y figurent aussi à hauteur de leur plafond, pas de leur réalisation mensuelle).
+        var pvEntries = (P.pv || []).filter(function (t) { return tdMatchesArticle(t, lot.id, a); });
+        var mPVart = pvEntries.reduce(function (s, t) {
+          if (t.type === 'prix') return s + (t.qty || 0) * ((t.pu || 0) - (t.pu0 || 0));
+          return s + (t.mPV || ((t.qty || 0) * (t.pu || 0)));
+        }, 0);
+        if (qMarche === 0 && qTS === 0 && qTD === 0 && mPVart === 0) return; // rien à signaler pour cet article : pas d'avenant le concernant
         var qNouveau = qMarche + qTS + qTC - qTD;
-        var mMarche = qMarche * pu, mNouveau = mMarche + mTS + mTC - mTD;
-        totMarche += mMarche; totTS += mTS; totTC += mTC; totTD += mTD; totNouveau += mNouveau;
-        lotMarche += mMarche; lotTS += mTS; lotTC += mTC; lotTD += mTD; lotNouveau += mNouveau;
+        var mMarche = qMarche * pu, mNouveau = mMarche + mTS + mTC - mTD + mPVart;
+        totMarche += mMarche; totTS += mTS; totTC += mTC; totTD += mTD; totPV += mPVart; totNouveau += mNouveau;
+        lotMarche += mMarche; lotTS += mTS; lotTC += mTC; lotTD += mTD; lotPV += mPVart; lotNouveau += mNouveau;
         aoa.push([
           txtCell(a.num || '', 'center', true),
           txtCell(a.n || ''),
@@ -3010,7 +3025,8 @@ function genererAvenantExcel() {
           numCell(qMarche), numCell(qTS, qTS > 0, '1F497D'), numCell(qTC), numCell(qTD, qTD > 0, 'C00000'),
           numCell(qNouveau, true),
           numCell(pu),
-          mntCell(mMarche), mntCell(mTS, mTS > 0, '1F497D'), mntCell(mTC), mntCell(mTD, mTD > 0, 'C00000'), mntCell(mNouveau, true, null, 'F2F2F2')
+          mntCell(mMarche), mntCell(mTS, mTS > 0, '1F497D'), mntCell(mTC), mntCell(mTD, mTD > 0, 'C00000'),
+          mntCell(mPVart, mPVart > 0, '7030A0'), mntCell(mNouveau, true, null, 'F2F2F2')
         ]);
       });
 
@@ -3027,13 +3043,14 @@ function genererAvenantExcel() {
           numCell(0), numCell(0), numCell(qty, true, '375623'), numCell(0),
           numCell(qty, true),
           numCell(pu),
-          mntCell(0), mntCell(0), mntCell(mTC, true, '375623'), mntCell(0), mntCell(mTC, true, null, 'F2F2F2')
+          mntCell(0), mntCell(0), mntCell(mTC, true, '375623'), mntCell(0),
+          mntCell(0), mntCell(mTC, true, null, 'F2F2F2')
         ]);
       });
 
       // Sous-total du lot (seulement s'il y a au moins une ligne dans ce lot)
-      if (lotMarche || lotTS || lotTC || lotTD) {
-        aoa.push(totalRow('SOUS-TOTAL ' + lot.id, lotMarche, lotTS, lotTC, lotTD, lotNouveau, 'DBE5F1', '1F497D', 9));
+      if (lotMarche || lotTS || lotTC || lotTD || lotPV) {
+        aoa.push(totalRow('SOUS-TOTAL ' + lot.id, lotMarche, lotTS, lotTC, lotTD, lotPV, lotNouveau, 'DBE5F1', '1F497D', 9));
         merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 8 } });
         aoa.push(blankRow());
       }
@@ -3041,11 +3058,11 @@ function genererAvenantExcel() {
 
     aoa.push(blankRow());
 
-    aoa.push(totalRow('TOTAL HT', totMarche, totTS, totTC, totTD, totNouveau, 'FCE4D6', 'C00000'));
+    aoa.push(totalRow('TOTAL HT', totMarche, totTS, totTC, totTD, totPV, totNouveau, 'FCE4D6', 'C00000'));
     merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 8 } });
-    aoa.push(totalRow('TVA ' + (tva * 100).toFixed(0) + '%', totMarche * tva, totTS * tva, totTC * tva, totTD * tva, totNouveau * tva, 'FFF2CC', '7B5427'));
+    aoa.push(totalRow('TVA ' + (tva * 100).toFixed(0) + '%', totMarche * tva, totTS * tva, totTC * tva, totTD * tva, totPV * tva, totNouveau * tva, 'FFF2CC', '7B5427'));
     merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 8 } });
-    aoa.push(totalRow('TOTAL TTC', totMarche * (1 + tva), totTS * (1 + tva), totTC * (1 + tva), totTD * (1 + tva), totNouveau * (1 + tva), 'FCE4D6', 'C00000'));
+    aoa.push(totalRow('TOTAL TTC', totMarche * (1 + tva), totTS * (1 + tva), totTC * (1 + tva), totTD * (1 + tva), totPV * (1 + tva), totNouveau * (1 + tva), 'FCE4D6', 'C00000'));
     merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 8 } });
 
     aoa.push(blankRow());
@@ -3127,6 +3144,7 @@ function genererAvenantExcel() {
     ligneChamp(aoa, merges, 'Travaux Suppl\u00e9mentaires (TS)', DA(g.ts));
     ligneChamp(aoa, merges, 'Travaux Compl\u00e9mentaires valid\u00e9s (TC)', DA(g.tc));
     ligneChamp(aoa, merges, 'Travaux \u00e0 D\u00e9duire (TD)', '-' + DA(g.td));
+    ligneChamp(aoa, merges, 'Plus-values (sur prix / sur quantit\u00e9)', DA(g.pv));
     ligneChamp(aoa, merges, 'Articles D\u00e9sengag\u00e9s', '-' + DA(g.desengage));
     aoa.push(blankRow());
     totalRowSimple(aoa, merges, 'BUDGET MARCH\u00c9 INITIAL HT', g.budgetInitial, NCOLS - 1, 'DBE5F1', '1F497D');
@@ -3240,6 +3258,38 @@ function genererAvenantExcel() {
     var ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = cw; ws['!merges'] = merges;
     XLSX.utils.book_append_sheet(wb, ws, 'D\u00e9duires');
+  })();
+
+  // ══════════════════════════════════════════════════
+  // FEUILLE 4bis : PLUS-VALUES (sur prix et sur quantité)
+  // ══════════════════════════════════════════════════
+  (function () {
+    var aoa = [], merges = [];
+    enTeteDocument(aoa, merges, 'Plus-values (sur Prix et sur Quantit\u00e9)', '7030A0');
+    aoa.push([hdrCell('N\u00b0'), hdrCell('Type'), hdrCell('Lot'), hdrCell('Article'), hdrCell('D\u00e9signation'), '', hdrCell('Unit\u00e9'), hdrCell('Quantit\u00e9'), hdrCell('Ancien Prix'), hdrCell('Nouveau Prix'), hdrCell('Montant HT'), hdrCell('Mois'), hdrCell('Observation'), '']);
+    merges.push({ s: { r: aoa.length - 1, c: 4 }, e: { r: aoa.length - 1, c: 5 } });
+    merges.push({ s: { r: aoa.length - 1, c: 12 }, e: { r: aoa.length - 1, c: 13 } });
+    var total = 0;
+    (P.pv || []).forEach(function (t, i) {
+      var isPrix = t.type === 'prix';
+      var mnt = isPrix ? (t.qty || 0) * ((t.pu || 0) - (t.pu0 || 0)) : (t.mPV || ((t.qty || 0) * (t.pu || 0)));
+      total += mnt;
+      var row = [
+        txtCell(i + 1, 'center', true), txtCell(isPrix ? 'PV Prix' : 'PV Qt\u00e9', 'center', true), txtCell(t.lot, 'center'), txtCell(t.art || '', 'center'),
+        txtCell(t.des || ''), '', txtCell(t.unit || '', 'center'), numCell(t.qty || 0),
+        numCell(isPrix ? (t.pu0 || 0) : (t.pu || 0)), numCell(isPrix ? (t.pu || 0) : (t.pu || 0)),
+        mntCell(mnt, true, '7030A0'), txtCell(P.months[t.mois] || '', 'center'), txtCell(t.obs || ''), ''
+      ];
+      aoa.push(row);
+      merges.push({ s: { r: aoa.length - 1, c: 4 }, e: { r: aoa.length - 1, c: 5 } });
+      merges.push({ s: { r: aoa.length - 1, c: 12 }, e: { r: aoa.length - 1, c: 13 } });
+    });
+    if ((P.pv || []).length === 0) { var r = blankRow(); r[0] = { v: 'Aucune plus-value enregistr\u00e9e', t: 's', s: { font: { italic: true, sz: 10, name: 'Arial', color: { rgb: '808080' } }, alignment: { horizontal: 'center' } } }; aoa.push(r); merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: NCOLS - 1 } }); }
+    aoa.push(blankRow());
+    totalRowSimple(aoa, merges, 'TOTAL PLUS-VALUES HT', total, 10, 'EAE0F2', '7030A0');
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = cw; ws['!merges'] = merges;
+    XLSX.utils.book_append_sheet(wb, ws, 'Plus-value');
   })();
 
   // ══════════════════════════════════════════════
@@ -5368,6 +5418,26 @@ function tcQCum(t, uptoMi){
   for(var i=0;i<=uptoMi && i<m.length;i++) s += (m[i]||0);
   return Math.min(s, t.qty||0); // la quantité cumulée ne peut jamais dépasser la Qté Marché (plafond de l'avenant)
 }
+// ── Quantité mensuelle d'une Plus-value sur prix (PV type "prix") : exactement le même principe
+// que pour un TC — t.qty reste le plafond ("Quantité concernée par le nouveau prix", validée par
+// l'avenant) et t.m[] porte la quantité réellement réalisée à ce nouveau prix CHAQUE mois (saisie
+// directement sur la plus-value, indépendamment de la quantité globale de l'article dans le DQE).
+// Migration rétro-compatible : une ancienne PV sur prix sans t.m voit sa quantité placée dans son
+// mois d'enregistrement (t.mois), pour ne rien perdre des données déjà saisies/validées.
+function pvPrixQM(t){
+  var n = (P.months||[]).length || 1;
+  if(!Array.isArray(t.m)){
+    t.m = new Array(n).fill(0);
+    var mi0 = parseInt(t.mois); if(!isNaN(mi0) && mi0>=0 && mi0<n) t.m[mi0] = t.qty||0;
+  }
+  while(t.m.length < n) t.m.push(0);
+  return t.m;
+}
+function pvPrixQCum(t, uptoMi){
+  var m = pvPrixQM(t), s=0;
+  for(var i=0;i<=uptoMi && i<m.length;i++) s += (m[i]||0);
+  return t.qty>0 ? Math.min(s, t.qty) : s; // plafonnée à la quantité concernée par le nouveau prix (si renseignée)
+}
 // ── Montant "extra-bordereau" d'un lot pour un mois donné : Travaux Complémentaires (TC) validés
 // + Plus-values sur prix (PV type "prix") formalisées par avenant signé. Ces éléments n'ont pas de
 // quantité d'article associée (contrairement aux TS / PV sur quantité / TD, déjà intégrés via
@@ -5385,23 +5455,20 @@ function tcPvExtraItems(lotId, mi){
         av:t.av||'', mois:mi
       });
     });
-  // Une plus-value sur prix s'applique à l'article concerné : à partir du mois où le nouveau prix
-  // prend effet (t.mois), chaque quantité RÉELLEMENT saisie sur cet article dans Lots & Articles
-  // (Qté du mois) est valorisée à l'écart de prix (nouveau − ancien), plafonnée à la « quantité
-  // concernée par le nouveau prix » de l'avenant (t.qty, si renseignée). Le montant suit donc le mois
-  // exact où la quantité a été saisie — et non un montant fixe détaché de l'avancement réel.
+  // Une plus-value sur prix a sa propre quantité mensuelle (pvPrixQM/pvPrixQCum, exactement comme
+  // un TC) : t.qty est le plafond ("Quantité concernée par le nouveau prix"), et la quantité réalisée
+  // CHAQUE mois se saisit directement sur la plus-value (page Travaux en Plus-value, ou Lots & Articles
+  // → "Travaux ajoutés par avenant signé"). Le montant du mois = quantité du mois × écart de prix
+  // (nouveau − ancien), et suit donc le mois exact où la quantité a été saisie.
   pvEff().filter(function(t){ return t.lot===lotId && t.type==='prix'; }).forEach(function(t){
-    var tm = parseInt(t.mois)||0; if(tm>mi) return;
     var lotRef = (P.lots||[]).find(function(l){ return l.id===lotId; });
     var artRef = lotRef ? (lotRef.articles||[]).find(function(x){ return x && ((t.artUid && x._uid===t.artUid) || (!t.artUid && x.num===t.art)); }) : null;
     var delta = (t.pu||0)-(t.pu0||0);
-    var mArr = artRef ? (artRef.m||[]) : [];
-    var sumUpto = function(uptoMi){ var s=0; for(var i=tm;i<=uptoMi && i<mArr.length;i++) s += (mArr[i]||0); return t.qty>0 ? Math.min(s, t.qty) : s; };
-    var qCum = sumUpto(mi), qPrev = mi>0 ? sumUpto(mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
+    var qCum = pvPrixQCum(t, mi), qPrev = mi>0 ? pvPrixQCum(t, mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
     out.push({kind:'pv', lbl:'Plus-value (prix) — '+(t.des||'Plus-value sur prix'), num:(artRef&&artRef.num)||'', des:t.des||'', u:t.unit||'',
       qMarche:t.qty||0, qPrev:qPrev, qMois:qMois, qCum:qCum, pu:delta,
       mntPrev:dcR2(qPrev*delta), mntMois:dcR2(qMois*delta), mntCum:dcR2(qCum*delta),
-      mnt:dcR2(qMois*delta), av:t.av||'', mois:mi});
+      mnt:dcR2(qMois*delta), av:t.av||'', mois:mi, pvIdx:(P.pv||[]).indexOf(t)});
   });
   return out;
 }
@@ -6644,6 +6711,7 @@ function saveTC(){
   renderApp();
 }
 function onQtyTC(i, mi, v){ if(!canEdit()) return; const t=P.tc && P.tc[i]; if(!t) return; const m=tcQM(t); m[mi]=Math.max(0,parseFloat(v)||0); saveAll(); toast('Quantité TC du mois enregistrée'); }
+function onQtyPV(i, mi, v){ if(!canEdit()) return; const t=P.pv && P.pv[i]; if(!t) return; const m=pvPrixQM(t); m[mi]=Math.max(0,parseFloat(v)||0); saveAll(); toast('Quantité de la plus-value du mois enregistrée'); }
 function deleteTC(i){ if(confirm('Supprimer ce TC ?')){ const t=P.tc[i]; logJournal('tc','suppression', `Lot ${t.lot} — "${(t.des||'').substring(0,60)}" (${DA((t.qty||0)*(t.pu||0))})`); P.tc.splice(i,1); saveAll(); renderApp(); toast('TC supprimé','ok'); } }
 
 // TS
@@ -7684,6 +7752,13 @@ function avLotExtras(lot){
   tcEff().filter(function(t){ return t.lot===id && t.statut==='valide'; }).forEach(function(t){
     const qCum = tcQCum(t, mi), qPrev = mi>0 ? tcQCum(t, mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
     out.push({k:'TC', ref:t.ref||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:(t.qty||0)*(t.pu||0), av:t.av||'', qMois:qMois, qCum:qCum, tcIdx:(P.tc||[]).indexOf(t)});
+  });
+  // Plus-values sur prix (avenant signé) : même principe que les TC — quantité mensuelle éditable,
+  // plafonnée à la « quantité concernée par le nouveau prix ».
+  pvEff().filter(function(t){ return t.lot===id && t.type==='prix'; }).forEach(function(t){
+    const delta = (t.pu||0)-(t.pu0||0);
+    const qCum = pvPrixQCum(t, mi), qPrev = mi>0 ? pvPrixQCum(t, mi-1) : 0, qMois = Math.max(0, qCum-qPrev);
+    out.push({k:'PV', ref:t.art||'', des:(t.des||'Plus-value sur prix')+' (écart prix '+(t.pu0||0)+' → '+(t.pu||0)+')', u:t.unit||'', q:t.qty||0, p:delta, m:(t.qty||0)*delta, av:t.av||'', qMois:qMois, qCum:qCum, pvIdx:(P.pv||[]).indexOf(t)});
   });
   tsEff().filter(function(t){ return t.lot===id && !arts.some(function(a){ return avMatch(t,id,a); }); }).forEach(function(t){ out.push({k:'TS', ref:t.art||'', des:t.des||'', u:t.unit||'', q:t.qty||0, p:t.pu||0, m:t.mTS||((t.qty||0)*(t.pu||0)), av:t.av||''}); });
   return out;
@@ -10302,11 +10377,12 @@ function rLots(){
   const ex = avLotExtras(lot);
   if(ex.length){
     const roEx = !canEdit();
-    html+=`<tr style="background:var(--nv3);cursor:default"><td colspan="${!canEdit()?9:10}" style="padding:9px 14px;font-size:12px;font-weight:700;color:var(--gd)">Travaux ajoutés par avenant signé (TC / TS hors DQE)</td></tr>`;
+    html+=`<tr style="background:var(--nv3);cursor:default"><td colspan="${!canEdit()?9:10}" style="padding:9px 14px;font-size:12px;font-weight:700;color:var(--gd)">Travaux ajoutés par avenant signé (TC / Plus-values sur prix / TS hors DQE)</td></tr>`;
     ex.forEach(function(e){
-      const hasM = e.k==='TC';
+      const hasM = e.k==='TC' || e.k==='PV';
       const pctE = hasM && e.q>0 ? Math.min(100, e.qCum/e.q*100) : null;
-      const qMoisCell = hasM ? `<input type="number" value="${(e.qMois||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${roEx?'readonly':''} onchange="onQtyTC(${e.tcIdx},${P.moisIdx},this.value)">` : '<span style="color:var(--g2)">—</span>';
+      const onCh = e.k==='TC' ? `onQtyTC(${e.tcIdx},${P.moisIdx},this.value)` : `onQtyPV(${e.pvIdx},${P.moisIdx},this.value)`;
+      const qMoisCell = hasM ? `<input type="number" value="${(e.qMois||0).toFixed(3)}" min="0" step="0.001" style="width:72px;text-align:right" ${roEx?'readonly':''} onchange="${onCh}">` : '<span style="color:var(--g2)">—</span>';
       html+=`<tr style="background:#fffaf0"><td class="center" style="font-size:11px">${escapeHtml(e.ref)}</td><td>${escapeHtml(e.des)} <span class="badge bo" style="font-size:9px">${e.k} · ${escapeHtml(e.av||'')}</span></td><td style="font-size:12px;color:var(--g3)">${escapeHtml(e.u)}</td><td class="r" style="color:var(--or);font-weight:600">${N2(e.q)}</td><td class="r px">${DA(e.p)}</td><td class="r px" style="color:var(--or);font-weight:600">${DA(e.m)}</td><td class="r">${qMoisCell}</td><td class="r">${hasM?N2(e.qCum):'<span style="color:var(--g2)">—</span>'}</td><td class="r">${pctE!==null?pctE.toFixed(0)+'%':'<span style="color:var(--g2)">—</span>'}</td>${!canEdit()?'':'<td></td>'}</tr>`;
     });
   }
