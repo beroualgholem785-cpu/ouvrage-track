@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-17';
+    var __OT_BUILD = '2026-11-18';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -1905,10 +1905,10 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
 
 <!-- MODAL IA CHAT + RAPPORT -->
 <div class="modal-overlay hidden" id="modal-ia">
-  <div class="modal" style="max-width:860px;padding:0;overflow:hidden;border-radius:14px">
+  <div class="modal" style="max-width:860px;padding:0;overflow:hidden;border-radius:14px;display:flex;flex-direction:column;max-height:92vh">
 
     <!-- En-tête gradient -->
-    <div class="ia-modal-header" style="margin-bottom:0;border-radius:0">
+    <div class="ia-modal-header" style="margin-bottom:0;border-radius:0;flex-shrink:0">
       <div class="ia-modal-icon">🤖</div>
       <div>
         <div class="ia-modal-title">Assistant IA — Ouvrage Track</div>
@@ -1918,7 +1918,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
     </div>
 
     <!-- Onglets -->
-    <div style="display:flex;border-bottom:1px solid var(--br);background:var(--sd2);padding:0 16px">
+    <div style="display:flex;border-bottom:1px solid var(--br);background:var(--sd2);padding:0 16px;flex-shrink:0">
       <button class="ia-tab-main active" id="ia-tab-chat" onclick="switchIATab('chat')"
         style="padding:10px 18px;border:none;border-bottom:2.5px solid transparent;background:none;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--fb);color:var(--tx3);transition:all .15s;margin-bottom:-1px">
         💬 Chat IA
@@ -1929,7 +1929,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
       </button>
     </div>
 
-    <div style="padding:16px">
+    <div style="padding:16px;overflow-y:auto;flex:1 1 auto;min-height:0">
 
       <!-- ═══ ONGLET CHAT ═══ -->
       <div id="ia-panel-chat">
@@ -2188,6 +2188,22 @@ let _chatHistory = [];   // {role, content}[] — utilisé pour l'affichage/expo
 let _geminiPrevInteractionId = null; // conversation gérée côté serveur (Interactions API)
 let _chatBusy = false;
 
+// Filet de sécurité : certains modèles ajoutent spontanément une mention du type
+// "Ce rapport a été généré par l'assistant IA / Ouvrage Track / Gemini / un chatbot".
+// On la retire systématiquement de toute réponse affichée ou exportée (chat ET rapport),
+// quelle que soit sa position dans le texte, pour que ni les documents ni les rapports
+// n'affichent jamais une telle attribution.
+function stripAIAttribution(text) {
+  if (!text) return text;
+  var genWords = '(?:g[ée]n[ée]r[ée]{0,2}s?|r[ée]dig[ée]{0,2}s?|produit[es]?|cr[ée][ée]{0,2}s?|[ée]labor[ée]{0,2}s?)';
+  var aiWords  = '(?:intelligence\\s+artificielle|\\bIA\\b|chat\\s*-?\\s*IA\\b|assistant\\s*IA\\b|chatbot\\b|gemini\\b|ouvrage\\s*track\\b)';
+  var lineRe = new RegExp('(?:^|[.!?]\\s*)[^.!?\\n]*' + genWords + '[^.!?\\n]*' + aiWords + '[^.!?\\n]*[.!?]?', 'gi');
+  var cleaned = text.replace(lineRe, '').replace(/[ \t]{2,}/g, ' ');
+  var lines = cleaned.split('\n').filter(function(l){ return l.trim() !== '' || true; });
+  cleaned = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned || text; // ne jamais vider complètement le texte par erreur
+}
+
 function getGeminiSystemPrompt() {
   var g  = calcGlobal();
   var ph = P.lots.length ? calcPhysical() : {pctPhysique:0, pctTheorique:0, statutDelai:'N/A'};
@@ -2398,6 +2414,7 @@ function getGeminiSystemPrompt() {
     '| Budget Initial | 100 000 000 |',
     'Ne JAMAIS utiliser de caracteres comme % = # ou autres pour dessiner un tableau en ASCII art. Si un tableau ne peut pas etre represente ainsi, utilise une liste a puces (- Rubrique : Montant) a la place.',
     'Tes reponses doivent etre precises et basees uniquement sur les donnees ci-dessous.',
+    'INTERDICTION ABSOLUE : ne mentionne JAMAIS, dans aucune reponse ni aucun rapport, le fait que ce texte a ete genere, redige ou produit par une IA, un assistant IA, un chatbot, Gemini ou "Ouvrage Track" (ex: "Ce rapport a ete genere par...", "Document produit par l\'assistant IA..."). Va directement au contenu metier, sans aucune mention ni signature de ce type, ni au debut ni a la fin.',
     consigneLongueur,
     '',
     'COMMANDES SPECIALES QUE TU PEUX TRAITER :',
@@ -2755,7 +2772,7 @@ L'utilisateur doit d'abord importer son DQE (fichier Excel) via la section "Impo
 Explique-lui brièvement comment faire et ce qu'il pourra faire ensuite avec toi.`;
 
   try {
-    const { reply, id } = await callGeminiAPI(GEMINI_API_KEY, {
+    let { reply, id } = await callGeminiAPI(GEMINI_API_KEY, {
       model: 'gemini-3.6-flash',
       temperature: 0.6,
       maxTokens: getLongueurReponsesIA()==='courte' ? 3000 : 16000,
@@ -2768,6 +2785,7 @@ Explique-lui brièvement comment faire et ce qu'il pourra faire ensuite avec toi
     hideTyping();
 
     if (!reply) throw new Error('Réponse vide');
+    reply = stripAIAttribution(reply);
 
     _geminiPrevInteractionId = id || _geminiPrevInteractionId;
     _chatHistory.push({ role: 'assistant', content: reply });
@@ -4690,7 +4708,8 @@ function buildReportInstructions(option) {
     'des tableaux en syntaxe Markdown standard (| Colonne | Colonne | ... avec ligne |---|---| de séparation), ' +
     'et des blocs [CRITIQUE]/[ALERTE]/[OK]/[INFO] pour les points saillants. ' +
     'Base-toi UNIQUEMENT sur les données du projet fournies ci-dessus : n\'invente jamais de chiffre, de date ou de fait non présent dans ces données. ' +
-    'Rédige un document COMPLET et ABOUTI : ne t\'arrête pas en cours de rédaction, va jusqu\'à la conclusion.\n\n';
+    'Rédige un document COMPLET et ABOUTI : ne t\'arrête pas en cours de rédaction, va jusqu\'à la conclusion. ' +
+    'N\'ajoute aucune mention indiquant que ce document a été généré/rédigé/produit par une IA, un assistant IA, un chatbot, Gemini ou "Ouvrage Track" : ni en en-tête, ni en pied de page, ni en conclusion — uniquement le contenu métier.\n\n';
 
   var templates = {
     executive:
@@ -4757,7 +4776,7 @@ async function generateIAReport() {
     const instructions = buildReportInstructions(IA_OPTION);
     // Rapports longs : budget de sortie généreux, "thinking" réduit au minimum pour
     // préserver ce budget pour le texte du rapport lui-même (évite les rapports tronqués).
-    const { reply } = await callGeminiAPI(GEMINI_API_KEY, {
+    let { reply } = await callGeminiAPI(GEMINI_API_KEY, {
       model: 'gemini-3.6-flash',
       temperature: 0.4,
       maxTokens: 32000,
@@ -4767,6 +4786,7 @@ async function generateIAReport() {
     });
 
     if (!reply) throw new Error('Réponse vide');
+    reply = stripAIAttribution(reply);
 
     window._lastIAReportRaw = reply;
     window._lastIAReportType = IA_OPTION;
