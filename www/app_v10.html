@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-20';
+    var __OT_BUILD = '2026-11-21';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -17495,16 +17495,42 @@ label{font-size:11px}
     return (KW_SOUSTOTAL.test(up) && !KW_TOTAUX.test(up)) || KW_TVA.test(up) || KW_TTC.test(up) || KW_TOTAL.test(up) || (KW_ARRETE.test(up) && KW_SOMME.test(up));
   }
 
-  async function generateAuthenticPdf(kind){
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  // Le BPU d'origine a-t-il une vraie case/colonne « prix en lettres » (légende
+  // détectée sur une cellule de désignation, comme « Le mètre cube : ») ? Pour un
+  // BPU issu d'un PDF/Word, le classeur est synthétique (buildWorkbookFromItems)
+  // et ne contient jamais une telle légende : la réponse est alors naturellement
+  // « non », ce qui est le cas réel le plus courant.
+  function bpuHasWordsCell(ws, cfg){
+    if (!ws || !cfg || !cfg.label) return false;
+    try {
+      const lastRow = ws.rowCount;
+      const start = cfg.start || 1;
+      for (let r = start; r <= lastRow; r++){
+        const v = ws.getCell(r, cfg.label).value;
+        const t = (v && v.richText) ? v.richText.map(x => x.text).join('') : v;
+        if (core.isCaptionText(t)) return true;
+      }
+    } catch(e){}
+    return false;
+  }
+
+  // Dessine un tableau (DQE ou BPU) complet — en-tête, infos projet, lignes
+  // d'articles groupées par lot/section avec sous-totaux, totaux — dans le
+  // document jsPDF fourni, à partir de y0. Retourne false si rien à exporter
+  // (aucun article avec un prix saisi), sans rien dessiner dans ce cas.
+  async function generateAuthenticPdfInto(doc, kind, y0){
+    const isDqe = kind === 'dqe';
+    const rows = isDqe
+      ? dqeLines.filter(l => !l.skip && l.pu !== null && l.pu !== '')
+      : results.filter(r => !r.skip && r.prix_u !== null && r.prix_u !== '');
+    if (!rows.length) return false;
+
     const pi = (function(){ try { return pi_get(); } catch(e){ return {}; } })();
     const currency = document.getElementById('optCurrency').value || 'Dinars Algériens';
     const withWords = document.getElementById('optWords').checked;
-    const isDqe = kind === 'dqe';
     const tvaRate = parseFloat(String(pi.tva || '').replace(',', '.')) || 19;
     const W = 210, MAR = 14;
-    let y = 16;
+    let y = y0;
 
     doc.setFont('times', 'bold'); doc.setFontSize(10);
     doc.text('RÉPUBLIQUE ALGÉRIENNE DÉMOCRATIQUE ET POPULAIRE', W / 2, y, { align: 'center' }); y += 7;
@@ -17524,11 +17550,22 @@ label{font-size:11px}
     y += 3;
 
     let head, body = [], rowStyles = [];
+    const bpuHasWordsBox = !isDqe ? bpuHasWordsCell(wsBpu, bpuCfg) : false;
 
-    // Les titres de lot/section repérés dans le fichier d'origine (lignes de texte
-    // sans article ni mot-clé de total) permettent d'insérer de vraies ruptures de
-    // lot avec sous-total, exactement comme dans le document d'origine.
-    function scanSectionsAndBuild(ws, cfg, linesByKey, onData){
+    function pushLotTitle(title, colSpanBase){
+      if (!title) return;
+      body.push([{ content: title, colSpan: colSpanBase, styles: { fontStyle: 'bold', fillColor: [230, 230, 220], halign: 'left' } }]);
+      rowStyles.push('lot');
+    }
+    function pushSubtotal(title, sum){
+      body.push([{ content: 'SOUS-TOTAL — ' + title, colSpan: 5, styles: { fontStyle: 'bold', halign: 'right' } }, { content: pdfPrice(sum), styles: { fontStyle: 'bold' } }]);
+      rowStyles.push('subtotal');
+    }
+
+    // Les titres de lot/section repérés dans le fichier Excel d'origine (lignes de
+    // texte sans article ni mot-clé de total) permettent d'insérer de vraies ruptures
+    // de lot avec sous-total — ne fonctionne que pour un classeur Excel réel.
+    function scanSectionsAndBuild(ws, cfg, linesByKey, onData, colSpanBase){
       let sectionTitle = null, sectionSum = 0, grandSum = 0, any = false;
       const lastRow = ws ? ws.rowCount : 0;
       const start = (cfg && cfg.start) || 1;
@@ -17547,34 +17584,67 @@ label{font-size:11px}
         if (isKeywordRow(up)) continue; // ces lignes sont recalculées nous-mêmes plus bas
         // Nouveau titre de lot/section : on clôture le précédent avec son sous-total (DQE uniquement —
         // le BPU n'a pas de quantités donc pas de sous-total de lot à calculer)
-        if (isDqe && sectionTitle !== null && any){
-          body.push([{ content: 'SOUS-TOTAL — ' + sectionTitle, colSpan: 5, styles: { fontStyle: 'bold', halign: 'right' } }, { content: pdfPrice(sectionSum), styles: { fontStyle: 'bold' } }]);
-          rowStyles.push('subtotal');
-        }
+        if (isDqe && sectionTitle !== null && any) pushSubtotal(sectionTitle, sectionSum);
         sectionTitle = full; sectionSum = 0; any = false;
-        body.push([{ content: full, colSpan: isDqe ? 6 : (withWords ? 5 : 4), styles: { fontStyle: 'bold', fillColor: [230, 230, 220], halign: 'left' } }]);
-        rowStyles.push('lot');
+        pushLotTitle(full, colSpanBase);
       }
-      if (isDqe && sectionTitle !== null && any){
-        body.push([{ content: 'SOUS-TOTAL — ' + sectionTitle, colSpan: 5, styles: { fontStyle: 'bold', halign: 'right' } }, { content: pdfPrice(sectionSum), styles: { fontStyle: 'bold' } }]);
-        rowStyles.push('subtotal');
+      if (isDqe && sectionTitle !== null && any) pushSubtotal(sectionTitle, sectionSum);
+      return grandSum;
+    }
+
+    // Les titres de lot/section repérés par l'IA (dqeOrderedItems/bpuOrderedItems)
+    // sont la SEULE source disponible quand le BPU/DQE provient d'un PDF ou d'un
+    // Word : le classeur synthétique construit pour ces fichiers ne contient aucune
+    // ligne de titre (buildWorkbookFromItems les ignore volontairement). Les codes
+    // des articles y sont préfixés par leur index de lot (lotScopedCode) : on
+    // compare donc stripLotPrefix(l.code) au code brut de l'IA pour rattacher
+    // chaque article à sa section.
+    function scanOrderedItemsAndBuild(orderedItems, rows, onData, colSpanBase){
+      const byCode = new Map();
+      rows.forEach(l => { const k = core.normCode(stripLotPrefix(l.code)); if (k) byCode.set(k, l); });
+      const consumed = new Set();
+      let sectionTitle = null, sectionSum = 0, grandSum = 0, any = false;
+      for (const it of orderedItems){
+        if (it.type === 'lot_fin') continue;
+        if (it.type === 'section' || it.type === 'lot'){
+          if (isDqe && sectionTitle !== null && any) pushSubtotal(sectionTitle, sectionSum);
+          sectionTitle = (it.title || '').trim();
+          sectionSum = 0; any = false;
+          pushLotTitle(sectionTitle, colSpanBase);
+          continue;
+        }
+        if (it.type === 'item'){
+          const key = it.code ? core.normCode(it.code) : null;
+          const l = key ? byCode.get(key) : null;
+          if (!l) continue;
+          consumed.add(l);
+          any = true;
+          const m = onData(l);
+          sectionSum += m; grandSum += m;
+        }
       }
+      if (isDqe && sectionTitle !== null && any) pushSubtotal(sectionTitle, sectionSum);
+      // Sécurité : articles présents dans le tableau mais non retrouvés dans
+      // dqeOrderedItems/bpuOrderedItems (ne devrait normalement pas arriver) —
+      // on les ajoute quand même, hors section, pour ne jamais perdre un article.
+      rows.forEach(l => { if (!consumed.has(l)){ any = true; const m = onData(l); grandSum += m; } });
       return grandSum;
     }
 
     if (isDqe){
-      const rows = dqeLines.filter(l => !l.skip && l.pu !== null && l.pu !== '');
-      if (!rows.length) return false;
       head = [['N°', 'Désignation', 'Unité', 'Quantité', 'Prix Unitaire', 'Montant']];
       const linesByRow = new Map(rows.map(l => [l.row, l]));
-
-      const totalHT = scanSectionsAndBuild(wsDqe, dqeCfg, linesByRow, (l) => {
+      const onData = (l) => {
         const q = core.parseFrNum(l.qte), p = core.parseFrNum(l.pu);
         const m = (!isNaN(q) && !isNaN(p)) ? q * p : 0;
         body.push([stripLotPrefix(l.code) || '', l.label || '', l.unit || '', isNaN(q) ? '' : fmtQtyFr(q), isNaN(p) ? '' : pdfPrice(p), pdfPrice(m)]);
         rowStyles.push('data');
         return m;
-      });
+      };
+      const useOrdered = dqeOrderedItems && dqeOrderedItems.some(it => it.type === 'section' || it.type === 'lot');
+      const totalHT = useOrdered
+        ? scanOrderedItemsAndBuild(dqeOrderedItems, rows, onData, 6)
+        : scanSectionsAndBuild(wsDqe, dqeCfg, linesByRow, onData, 6);
 
       const tva = totalHT * tvaRate / 100, ttc = totalHT + tva;
       body.push([{ content: 'TOTAL (HT)', colSpan: 5, styles: { fontStyle: 'bold', halign: 'right' } }, { content: pdfPrice(totalHT), styles: { fontStyle: 'bold' } }]); rowStyles.push('total');
@@ -17585,18 +17655,32 @@ label{font-size:11px}
         rowStyles.push('arrete');
       }
     } else {
-      const rows = results.filter(r => !r.skip && r.prix_u !== null && r.prix_u !== '');
-      if (!rows.length) return false;
-      head = withWords ? [['N°', 'Désignation', 'Unité', 'Prix Unitaire', 'Montant en toutes lettres']] : [['N°', 'Désignation', 'Unité', 'Prix Unitaire']];
+      const colSpanBase = withWords ? (bpuHasWordsBox ? 5 : 4) : 4;
+      head = withWords
+        ? (bpuHasWordsBox ? [['N°', 'Désignation', 'Unité', 'Prix Unitaire', 'Montant en toutes lettres']] : [['N°', 'Désignation', 'Unité', 'Prix Unitaire']])
+        : [['N°', 'Désignation', 'Unité', 'Prix Unitaire']];
       const linesByRow = new Map(rows.filter(r => r.price_row != null).map(r => [r.price_row, r]));
-
-      scanSectionsAndBuild(wsBpu, bpuCfg, linesByRow, (r) => {
-        const row = [stripLotPrefix(r.code) || '', r.label || '', r.unit || '', pdfPrice(r.prix_u)];
-        if (withWords && core.numberToFrenchWords) row.push(core.wordsWithCurrency(core.parseFrNum(r.prix_u), currency));
+      const onData = (r) => {
+        let label = r.label || '';
+        let words = null;
+        if (withWords && core.numberToFrenchWords){
+          const w = core.wordsWithCurrency(core.parseFrNum(r.prix_u), currency);
+          words = w.charAt(0).toUpperCase() + w.slice(1);
+        }
+        // Règle : si le BPU d'origine n'a pas de case dédiée « prix en lettres »,
+        // le prix en lettres est écrit directement à la suite de la désignation
+        // de l'article ; sinon il va dans sa propre case, à l'emplacement où se
+        // trouve cette case dans le document d'origine (ici : sa propre colonne).
+        if (words && !bpuHasWordsBox) label = label + ' (' + words + ')';
+        const row = [stripLotPrefix(r.code) || '', label, r.unit || '', pdfPrice(r.prix_u)];
+        if (words && bpuHasWordsBox) row.push(words);
         body.push(row);
         rowStyles.push('data');
         return 0;
-      });
+      };
+      const useOrdered = bpuOrderedItems && bpuOrderedItems.some(it => it.type === 'section' || it.type === 'lot');
+      if (useOrdered) scanOrderedItemsAndBuild(bpuOrderedItems, rows, onData, colSpanBase);
+      else scanSectionsAndBuild(wsBpu, bpuCfg, linesByRow, onData, colSpanBase);
     }
 
     doc.autoTable({
@@ -17624,20 +17708,54 @@ label{font-size:11px}
       }
     });
 
-    const base = (isDqe ? (dqeFileName || 'DQE') : (bpuFileName || 'BPU')).replace(/\.[^.]+$/, '');
-    doc.save(base + ' - authentique.pdf');
     return true;
+  }
+
+  // Point d'entrée : un seul PDF combiné (BPU + DQE) quand les deux proviennent
+  // du même fichier d'origine (case « même fichier » cochée et fichiers identiques),
+  // sinon deux fichiers PDF séparés comme auparavant.
+  async function generateAuthenticPdf(){
+    const { jsPDF } = window.jspdf;
+    const single = document.getElementById('optSingleFile').checked && sameFile(bpuFile, dqeFile);
+
+    if (single){
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const okDqe = await generateAuthenticPdfInto(doc, 'dqe', 16);
+      if (okDqe) doc.addPage();
+      const okBpu = await generateAuthenticPdfInto(doc, 'bpu', 16);
+      if (okDqe && !okBpu){
+        // La page ajoutée en prévision du BPU est restée vide (aucun article
+        // avec un prix saisi côté BPU) : on la retire pour ne pas livrer une
+        // page blanche à la fin du PDF.
+        try { doc.deletePage(doc.internal.getNumberOfPages()); } catch(e){}
+      }
+      if (!okDqe && !okBpu) return { okDqe: false, okBpu: false, combined: true };
+      const base = (bpuFileName || dqeFileName || 'BPU-DQE').replace(/\.[^.]+$/, '');
+      doc.save(base + ' - authentique.pdf');
+      return { okDqe, okBpu, combined: true };
+    }
+
+    const docDqe = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const okDqe = await generateAuthenticPdfInto(docDqe, 'dqe', 16);
+    if (okDqe) docDqe.save((dqeFileName || 'DQE').replace(/\.[^.]+$/, '') + ' - authentique.pdf');
+    if (okDqe) await new Promise(res => setTimeout(res, 400));
+
+    const docBpu = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const okBpu = await generateAuthenticPdfInto(docBpu, 'bpu', 16);
+    if (okBpu) docBpu.save((bpuFileName || 'BPU').replace(/\.[^.]+$/, '') + ' - authentique.pdf');
+
+    return { okDqe, okBpu, combined: false };
   }
 
   document.getElementById('btnGeneratePdf').addEventListener('click', async () => {
     const genMsg = document.getElementById('genMsg');
     genMsg.textContent = 'Génération du PDF…';
     try {
-      const okDqe = await generateAuthenticPdf('dqe');
-      if (okDqe) await new Promise(res => setTimeout(res, 400));
-      const okBpu = await generateAuthenticPdf('bpu');
+      const { okDqe, okBpu, combined } = await generateAuthenticPdf();
       genMsg.textContent = (okDqe || okBpu)
-        ? 'PDF authentique généré' + (okDqe && okBpu ? ' (DQE + BPU)' : okDqe ? ' (DQE)' : ' (BPU)') + ' et téléchargé.'
+        ? (combined
+            ? 'PDF authentique généré (BPU + DQE en un seul fichier) et téléchargé.'
+            : 'PDF authentique généré' + (okDqe && okBpu ? ' (DQE + BPU)' : okDqe ? ' (DQE)' : ' (BPU)') + ' et téléchargé.')
         : "Aucun article avec un prix à exporter pour l'instant.";
     } catch (e){
       console.error(e);
