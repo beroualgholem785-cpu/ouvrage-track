@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-21';
+    var __OT_BUILD = '2026-11-23';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -827,6 +827,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
   .chart-box{max-width:100%}
   .modal{max-width:96vw !important}
   #bpu-host{height:calc(100vh - 60px) !important}
+  #ai-host{height:calc(100vh - 60px) !important}
 }
 @media(max-width:700px){
   html body #app div[style*="grid-template-columns:1fr 1fr"],html body #app div[style*="grid-template-columns: 1fr 1fr"],html body #app div[style*="grid-template-columns:repeat(3"],html body #app div[style*="grid-template-columns:repeat(2"]{grid-template-columns:1fr !important}
@@ -942,6 +943,11 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
       <svg class="sb-ico" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span>Tableau de Bord</span>
     </button>
+    <button data-page="ai" data-tip="Ouvrage Track AI">
+      <svg class="sb-ico" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><line x1="12" y1="7" x2="12" y2="11"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
+      <span>Ouvrage Track AI</span>
+    </button>
+    <div class="sb-divider"></div>
     <button data-page="lots" data-tip="Lots & Articles">
       <svg class="sb-ico" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       <span>Lots &amp; Articles</span>
@@ -1064,6 +1070,7 @@ mark.hi{background:rgba(37,99,235,.15);color:var(--ac);border-radius:2px;font-we
   <div class="print-header"><h1 id="print-title">SUIVI DE MARCHÉ</h1><p id="print-info">Rapport imprimé le —</p></div>
 
   <div id="bpu-host" style="display:none;height:calc(100vh - 90px);min-height:480px"></div>
+  <div id="ai-host" style="display:none;height:calc(100vh - 90px);min-height:480px"></div>
   <div id="app"></div>
 </div>
 
@@ -10026,15 +10033,25 @@ function importBPUDQEData(d){
   }
 }
 
+// ── Visibilité de la zone #app : cachée dès qu'une des zones « hôtes »
+// persistantes (BPU/DQE, Ouvrage Track AI) est affichée à sa place. Centralisé
+// ici pour que chaque sync (bpuHostSync/aiHostSync) n'ait pas à se soucier des
+// autres zones hôtes.
+function syncAppVisibility(){
+  const app=document.getElementById('app');
+  if(!app) return;
+  app.style.display = (PAGE==='bpudqe' || PAGE==='ai') ? 'none' : '';
+}
+
 // ── BPU / DQE intégré (iframe persistante) ──────────────────
 let _bpuLoaded=false;
 let _bpuLastProj=null;
 function bpuHostSync(){
-  const host=document.getElementById('bpu-host'), app=document.getElementById('app');
-  if(!host||!app) return;
+  const host=document.getElementById('bpu-host');
+  if(!host) return;
   const on=(PAGE==='bpudqe');
   host.style.display=on?'block':'none';
-  app.style.display=on?'none':'';
+  syncAppVisibility();
   if(on && !_bpuLoaded){
     _bpuLoaded=true;
     _bpuLastProj = window.__otProjectId ? window.__otProjectId() : null;
@@ -10064,6 +10081,169 @@ window.addEventListener('message',function(e){
   if(d && d.type==='bpu-dqe-transfer' && d.payload){ importBPUDQEData(d.payload); }
   if(d && d.type==='ot-goto-params'){ otGoParams(); }
 });
+
+// ── Ouvrage Track AI — assistant IA 100% local (Ollama) ──────────────────
+// Étape 2 : chat de base relié à Ollama (http://localhost:11434), tournant
+// sur l'ordinateur de l'utilisateur, sans connexion Internet et sans aucun
+// coût. Rien n'est envoyé à un service externe. Les missions spécifiques
+// (BPU/DQE, marchés, chantier, rédaction) seront branchées aux étapes
+// suivantes, par-dessus ce socle.
+const AI_OLLAMA_URL_KEY = 'otAi_ollamaUrl_v1';
+const AI_MODEL_KEY = 'otAi_model_v1';
+const AI_HISTORY_KEY = 'otAi_history_v1';
+const AI_DEFAULT_MODEL = 'qwen2.5:7b-instruct';
+const AI_DEFAULT_URL = 'http://localhost:11434';
+const AI_SYSTEM_PROMPT = "Tu es « Ouvrage Track AI », l'assistant intégré à l'application Ouvrage Track, utilisée en Algérie pour la gestion de marchés publics de travaux de construction (BPU, DQE, avenants, situations, suivi de chantier). Réponds en français (ou en arabe si l'utilisateur t'écrit en arabe), de façon professionnelle, concise et directe. Si on te demande un calcul ou un montant précis tiré de l'application, dis clairement que pour l'instant tu ne peux pas encore lire les données de l'application (cette fonction arrive dans une prochaine étape) plutôt que d'inventer un chiffre. Ne jamais inventer de données chiffrées : si tu ne sais pas, dis-le.";
+
+let _aiLoaded = false;
+let _aiHistory = [];
+let _aiBusy = false;
+
+function aiGetUrl(){ try{ return localStorage.getItem(AI_OLLAMA_URL_KEY) || AI_DEFAULT_URL; }catch(e){ return AI_DEFAULT_URL; } }
+function aiGetModel(){ try{ return localStorage.getItem(AI_MODEL_KEY) || AI_DEFAULT_MODEL; }catch(e){ return AI_DEFAULT_MODEL; } }
+function aiLoadHistory(){
+  try{
+    const raw = localStorage.getItem(AI_HISTORY_KEY);
+    _aiHistory = raw ? JSON.parse(raw) : [];
+  }catch(e){ _aiHistory = []; }
+}
+function aiSaveHistory(){
+  try{ localStorage.setItem(AI_HISTORY_KEY, JSON.stringify(_aiHistory.slice(-60))); }catch(e){}
+}
+
+function aiHostSync(){
+  const host=document.getElementById('ai-host');
+  if(!host) return;
+  const on=(PAGE==='ai');
+  host.style.display=on?'block':'none';
+  syncAppVisibility();
+  if(on && !_aiLoaded){
+    _aiLoaded = true;
+    aiLoadHistory();
+    host.innerHTML = aiBuildUI();
+    aiRenderMessages();
+    aiCheckConnection();
+    const ta=document.getElementById('ai-input');
+    if(ta){
+      ta.addEventListener('keydown', function(e){
+        if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); aiSend(); }
+      });
+    }
+  } else if(on){
+    aiCheckConnection();
+  }
+}
+
+function aiBuildUI(){
+  return `
+  <div style="display:flex;flex-direction:column;height:100%;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #e2e2e2">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #eee;background:#fafafa">
+      <strong>🤖 Ouvrage Track AI</strong>
+      <span id="ai-status-dot" style="width:9px;height:9px;border-radius:50%;background:#bbb;display:inline-block"></span>
+      <span id="ai-status-text" style="font-size:13px;color:#666">Vérification de la connexion…</span>
+      <span style="flex:1"></span>
+      <label style="font-size:12px;color:#666">Modèle :
+        <input id="ai-model-input" type="text" value="${escapeHtml(aiGetModel())}" style="width:170px;font-size:12px;padding:3px 6px;border:1px solid #ccc;border-radius:4px">
+      </label>
+      <button id="ai-clear-btn" class="btn" style="font-size:12px;padding:4px 10px">Effacer la conversation</button>
+    </div>
+    <div id="ai-messages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px"></div>
+    <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
+      <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
+      <button id="ai-send-btn" class="btn-accent" style="padding:0 20px">Envoyer</button>
+    </div>
+  </div>`;
+}
+
+async function aiCheckConnection(){
+  const dot = document.getElementById('ai-status-dot');
+  const txt = document.getElementById('ai-status-text');
+  if(!dot || !txt) return;
+  dot.style.background = '#bbb';
+  txt.textContent = 'Vérification de la connexion…';
+  try{
+    const ctrl = new AbortController();
+    const to = setTimeout(()=>ctrl.abort(), 3000);
+    const res = await fetch(aiGetUrl() + '/api/tags', { signal: ctrl.signal });
+    clearTimeout(to);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const names = (data.models || []).map(m => m.name);
+    dot.style.background = '#2e9e4a';
+    txt.textContent = names.length ? ('Connecté — ' + names.length + ' modèle(s) installé(s) sur cet ordinateur') : 'Connecté — aucun modèle téléchargé pour l\'instant';
+  }catch(e){
+    dot.style.background = '#c0392b';
+    txt.innerHTML = 'Ollama non détecté sur cet ordinateur (ou non démarré). <a href="#" onclick="aiShowHelp();return false;">Aide</a>';
+  }
+}
+
+function aiShowHelp(){
+  alert("Ouvrage Track AI a besoin d'Ollama, installé une fois sur cet ordinateur (gratuit) :\n\n1. Téléchargez-le sur https://ollama.com/download/windows et installez-le.\n2. Ouvrez l'invite de commandes (touche Windows puis tapez cmd) et collez :\n   ollama pull " + aiGetModel() + "\n3. Revenez ici et rechargez cette page.\n\nSi Ollama est déjà installé et que ce message persiste, ouvrez l'invite de commandes et collez :\n   setx OLLAMA_ORIGINS \"*\"\npuis redémarrez Ollama (clic droit sur son icône près de l'horloge → Quitter, puis relancez-le) et rechargez cette page.");
+}
+
+function aiRenderMessages(){
+  const box = document.getElementById('ai-messages');
+  if(!box) return;
+  box.innerHTML = _aiHistory.map(function(m){
+    const mine = m.role === 'user';
+    return `<div style="align-self:${mine?'flex-end':'flex-start'};max-width:80%;background:${mine?'#2E4057':'#f1f1ef'};color:${mine?'#fff':'#222'};padding:8px 12px;border-radius:10px;white-space:pre-wrap;font-size:14px">${escapeHtml(m.content)}</div>`;
+  }).join('') || '<div style="color:#999;font-size:13px;text-align:center;margin-top:30px">Posez votre première question à l\'assistant…</div>';
+  box.scrollTop = box.scrollHeight;
+}
+
+async function aiSend(){
+  if(_aiBusy) return;
+  const ta = document.getElementById('ai-input');
+  const text = (ta.value || '').trim();
+  if(!text) return;
+  const modelInput = document.getElementById('ai-model-input');
+  const model = (modelInput && modelInput.value.trim()) || AI_DEFAULT_MODEL;
+  try{ localStorage.setItem(AI_MODEL_KEY, model); }catch(e){}
+
+  ta.value = '';
+  _aiHistory.push({ role: 'user', content: text });
+  aiSaveHistory();
+  aiRenderMessages();
+
+  _aiBusy = true;
+  const sendBtn = document.getElementById('ai-send-btn');
+  if(sendBtn){ sendBtn.disabled = true; sendBtn.textContent = '…'; }
+  _aiHistory.push({ role: 'assistant', content: '⏳ Réflexion en cours…' });
+  aiRenderMessages();
+
+  try{
+    const messages = [{ role: 'system', content: AI_SYSTEM_PROMPT }].concat(
+      _aiHistory.slice(0, -1).map(function(m){ return { role: m.role, content: m.content }; })
+    );
+    const res = await fetch(aiGetUrl() + '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model, messages: messages, stream: false })
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const reply = (data.message && data.message.content) || '(réponse vide)';
+    _aiHistory[_aiHistory.length - 1] = { role: 'assistant', content: reply };
+  }catch(e){
+    _aiHistory[_aiHistory.length - 1] = { role: 'assistant', content: "⚠️ Impossible de joindre Ollama sur cet ordinateur. Vérifiez qu'Ollama est installé et lancé, et que le modèle « " + model + " » est bien téléchargé (ollama pull " + model + "). Cliquez sur « Aide » en haut de l'écran pour le détail." };
+  }
+  _aiBusy = false;
+  if(sendBtn){ sendBtn.disabled = false; sendBtn.textContent = 'Envoyer'; }
+  aiSaveHistory();
+  aiRenderMessages();
+}
+
+document.addEventListener('click', function(e){
+  if(e.target && e.target.id === 'ai-send-btn') aiSend();
+  if(e.target && e.target.id === 'ai-clear-btn'){
+    if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
+      _aiHistory = [];
+      aiSaveHistory();
+      aiRenderMessages();
+    }
+  }
+});
+
 function openMDP(){
   if(!canEdit()){ toast('Réservé au profil Responsable','err'); return; }
   if(syncIsJoined()){ toast('Projet partagé : les mots de passe sont ceux du Responsable d\'origine et ne se modifient que chez lui','err',6000); return; }
@@ -12872,14 +13052,16 @@ function renderApp(){
     b.classList.toggle('active', b.dataset.page===PAGE);
   });
   // Titre page
-  const PAGE_TITLES = {dashboard:'Tableau de Bord',lots:'Lots & Articles',recap:'Récapitulatif',photos:'Photos Chantier',os:'Ordres de Service',avenants:'Avenants',desengagements:'Articles Désengagés',ts:'Travaux Supplémentaires',pv:'Travaux en Plus-value',revision:'Révision des Prix',tc:'Travaux Complémentaires',td:'Travaux à Déduire',situations:'Situations Mensuelles',paiements:'Paiements',attachement:'Saisie de l\'attachement',validation:'Attachements à valider',decompte:'Décompte / DGD',export:'Import / Export',bpudqe:'BPU / DQE — Remplissage',parametres:'Paramètres'};
+  const PAGE_TITLES = {dashboard:'Tableau de Bord',lots:'Lots & Articles',recap:'Récapitulatif',photos:'Photos Chantier',os:'Ordres de Service',avenants:'Avenants',desengagements:'Articles Désengagés',ts:'Travaux Supplémentaires',pv:'Travaux en Plus-value',revision:'Révision des Prix',tc:'Travaux Complémentaires',td:'Travaux à Déduire',situations:'Situations Mensuelles',paiements:'Paiements',attachement:'Saisie de l\'attachement',validation:'Attachements à valider',decompte:'Décompte / DGD',export:'Import / Export',bpudqe:'BPU / DQE — Remplissage',ai:'Ouvrage Track AI',parametres:'Paramètres'};
   const t = document.getElementById('topbar-page-title');
   if(t) t.textContent = PAGE_TITLES[PAGE] || 'Application';
   const el=document.getElementById('app');
-  const pages={dashboard:rDashboard, lots:rLots, recap:rRecap, photos:rPhotos, os:rOS, avenants:rAvenants, desengagements:rDesengagements, ts:rTS, pv:rPV, revision:rRevision, tc:rTC, td:rTD, situations:rSituations, paiements:rPaiements, attachement:rAttachement, validation:rValidation, decompte:rDecompte, export:rExport, bpudqe:function(){return '';}, parametres:rParametres};
+  const pages={dashboard:rDashboard, lots:rLots, recap:rRecap, photos:rPhotos, os:rOS, avenants:rAvenants, desengagements:rDesengagements, ts:rTS, pv:rPV, revision:rRevision, tc:rTC, td:rTD, situations:rSituations, paiements:rPaiements, attachement:rAttachement, validation:rValidation, decompte:rDecompte, export:rExport, bpudqe:function(){return '';}, ai:function(){return '';}, parametres:rParametres};
   el.innerHTML=(['ts','tc','td','pv','desengagements'].indexOf(PAGE) >= 0 ? avBanner() : '') + (pages[PAGE]||rDashboard)();
   bpuHostSync();
   if(PAGE==='bpudqe') return;
+  aiHostSync();
+  if(PAGE==='ai') return;
   afterRender();
 }
 
