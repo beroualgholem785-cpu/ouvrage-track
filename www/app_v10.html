@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-23';
+    var __OT_BUILD = '2026-11-24';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -10148,6 +10148,9 @@ function aiBuildUI(){
       <button id="ai-clear-btn" class="btn" style="font-size:12px;padding:4px 10px">Effacer la conversation</button>
     </div>
     <div id="ai-messages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px"></div>
+    <div style="padding:0 10px 6px">
+      <button id="ai-snapshot-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre les données BPU/DQE actuelles</button>
+    </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
       <button id="ai-send-btn" class="btn-accent" style="padding:0 20px">Envoyer</button>
@@ -10185,10 +10188,77 @@ function aiRenderMessages(){
   const box = document.getElementById('ai-messages');
   if(!box) return;
   box.innerHTML = _aiHistory.map(function(m){
+    if(m.isData){
+      return `<div style="align-self:center;max-width:95%;background:#eef4fb;border:1px solid #cfe0f3;color:#1b3a5c;padding:8px 12px;border-radius:8px;white-space:pre-wrap;font-size:12.5px;font-family:ui-monospace,monospace">${escapeHtml(m.content)}</div>`;
+    }
     const mine = m.role === 'user';
     return `<div style="align-self:${mine?'flex-end':'flex-start'};max-width:80%;background:${mine?'#2E4057':'#f1f1ef'};color:${mine?'#fff':'#222'};padding:8px 12px;border-radius:10px;white-space:pre-wrap;font-size:14px">${escapeHtml(m.content)}</div>`;
   }).join('') || '<div style="color:#999;font-size:13px;text-align:center;margin-top:30px">Posez votre première question à l\'assistant…</div>';
   box.scrollTop = box.scrollHeight;
+}
+
+// ── Récupère depuis l'outil BPU/DQE (iframe) un résumé réel de l'état actuel
+// (calculs déjà faits par l'outil lui-même) et l'ajoute au fil de discussion,
+// pour que l'assistant puisse en parler sans jamais inventer de chiffres.
+function aiRequestBpuDqeSnapshot(){
+  const fr = document.getElementById('bpu-frame');
+  if(!_bpuLoaded || !fr || !fr.contentWindow){
+    _aiHistory.push({ role:'assistant', content: "Ouvrez d'abord l'outil « BPU / DQE », chargez vos fichiers, puis revenez ici et cliquez à nouveau sur ce bouton." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const btn = document.getElementById('ai-snapshot-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Récupération…'; }
+
+  let done = false;
+  const onMsg = function(ev){
+    const d = ev.data;
+    if(!d || d.type !== 'ot-ai-snapshot-response' || done) return;
+    done = true;
+    window.removeEventListener('message', onMsg);
+    if(btn){ btn.disabled = false; btn.textContent = '📎 Joindre les données BPU/DQE actuelles'; }
+    aiAppendSnapshot(d.payload);
+  };
+  window.addEventListener('message', onMsg);
+  fr.contentWindow.postMessage({ type: 'ot-ai-request-snapshot' }, '*');
+
+  setTimeout(function(){
+    if(done) return;
+    done = true;
+    window.removeEventListener('message', onMsg);
+    if(btn){ btn.disabled = false; btn.textContent = '📎 Joindre les données BPU/DQE actuelles'; }
+    _aiHistory.push({ role:'assistant', content: "L'outil BPU/DQE n'a pas répondu. Ouvrez-le, vérifiez qu'un fichier est chargé, puis réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+  }, 4000);
+}
+
+function aiAppendSnapshot(payload){
+  if(!payload || !payload.available){
+    _aiHistory.push({ role:'assistant', content: "Aucune donnée BPU/DQE à joindre pour l'instant : chargez d'abord vos fichiers dans l'outil « BPU / DQE »." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const lines = [];
+  lines.push('[Données BPU/DQE actuelles — calculées par Ouvrage Track, ne pas en inventer d\'autres]');
+  if(payload.bpuFileName) lines.push('Fichier BPU : ' + payload.bpuFileName);
+  if(payload.dqeFileName) lines.push('Fichier DQE : ' + payload.dqeFileName);
+  lines.push('Articles DQE : ' + payload.nbArticlesDqe + ' — Articles BPU : ' + payload.nbArticlesBpu);
+  lines.push('Total HT du DQE (lignes avec quantité et prix saisis) : ' + payload.totalHT_DQE.toLocaleString('fr-FR') + ' DA');
+  if(payload.dqeArticlesSansPrixUnitaire) lines.push('⚠ ' + payload.dqeArticlesSansPrixUnitaire + ' article(s) du DQE sans prix unitaire saisi.');
+  const c = payload.repartitionStatutsBpu;
+  lines.push('Statuts des prix BPU : ' + c.ok + ' OK, ' + c.multi + ' à vérifier (plusieurs prix), ' + c.partial + ' à vérifier (partiel), ' + c.missing + ' manquant(s).');
+  if(payload.anomalies.length){
+    lines.push('');
+    lines.push('Anomalies détectées (' + payload.anomalies.length + ') :');
+    payload.anomalies.forEach(function(a){
+      lines.push('- Art. ' + a.code + ' « ' + a.designation + ' » — ' + a.statut + (a.remarque ? ' : ' + a.remarque : ''));
+    });
+  } else {
+    lines.push('Aucune anomalie détectée par l\'outil.');
+  }
+  _aiHistory.push({ role:'user', isData:true, content: lines.join('\n') });
+  aiSaveHistory();
+  aiRenderMessages();
 }
 
 async function aiSend(){
@@ -10235,6 +10305,7 @@ async function aiSend(){
 
 document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-send-btn') aiSend();
+  if(e.target && e.target.id === 'ai-snapshot-btn') aiRequestBpuDqeSnapshot();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
@@ -18735,7 +18806,57 @@ label{font-size:11px}
       curSessId = null; curSessKey = '';
       try { checkSavedSession(); } catch(e){}
     }
+    if (d && d.type === 'ot-ai-request-snapshot'){
+      let payload;
+      try { payload = aiBuildBpuDqeSnapshot(); }
+      catch(e){ payload = { available: false, error: e.message }; }
+      try { window.parent.postMessage({ type: 'ot-ai-snapshot-response', payload: payload }, '*'); } catch(e){}
+    }
   });
+
+  // ── Pont avec « Ouvrage Track AI » (application principale) ──────────────
+  // Construit un résumé FIABLE de l'état actuel du BPU/DQE — uniquement des
+  // chiffres déjà calculés par cet outil (statuts de correspondance, totaux),
+  // jamais de valeurs inventées — pour que l'assistant IA puisse en discuter
+  // sans avoir à deviner quoi que ce soit.
+  function aiBuildBpuDqeSnapshot(){
+    const hasBpu = Array.isArray(results) && results.length > 0;
+    const hasDqe = Array.isArray(dqeLines) && dqeLines.length > 0;
+    if (!hasBpu && !hasDqe) return { available: false };
+
+    const counts = { ok: 0, multi: 0, partial: 0, missing: 0 };
+    (results || []).forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+
+    const anomalies = (results || [])
+      .filter(r => !r.skip && r.status && r.status !== 'ok')
+      .slice(0, 60)
+      .map(r => ({
+        code: stripLotPrefix(r.editedCode || r.code) || '(sans n°)',
+        designation: r.label || '',
+        statut: statusLabel ? statusLabel(r.status) : r.status,
+        remarque: r.note || ''
+      }));
+
+    const dqeRowsActives = (dqeLines || []).filter(l => !l.skip);
+    let totalHT = 0, dqeSansPrix = 0;
+    dqeRowsActives.forEach(l => {
+      const q = core.parseFrNum(l.qte), p = core.parseFrNum(l.pu);
+      if (!isNaN(q) && !isNaN(p)) totalHT += q * p;
+      if (l.pu === null || l.pu === undefined || String(l.pu).trim() === '') dqeSansPrix++;
+    });
+
+    return {
+      available: true,
+      bpuFileName: bpuFileName || null,
+      dqeFileName: dqeFileName || null,
+      nbArticlesDqe: dqeRowsActives.length,
+      nbArticlesBpu: (results || []).filter(r => !r.skip).length,
+      totalHT_DQE: Math.round(totalHT * 100) / 100,
+      dqeArticlesSansPrixUnitaire: dqeSansPrix,
+      repartitionStatutsBpu: counts,
+      anomalies: anomalies
+    };
+  }
 })();
 <\/script>
 </body>
