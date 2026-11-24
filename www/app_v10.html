@@ -10148,8 +10148,9 @@ function aiBuildUI(){
       <button id="ai-clear-btn" class="btn" style="font-size:12px;padding:4px 10px">Effacer la conversation</button>
     </div>
     <div id="ai-messages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px"></div>
-    <div style="padding:0 10px 6px">
+    <div style="padding:0 10px 6px;display:flex;gap:8px;flex-wrap:wrap">
       <button id="ai-snapshot-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre les données BPU/DQE actuelles</button>
+      <button id="ai-words-btn" class="btn" style="font-size:12px;padding:5px 10px">🔤 Montant en lettres</button>
     </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
@@ -10256,9 +10257,86 @@ function aiAppendSnapshot(payload){
   } else {
     lines.push('Aucune anomalie détectée par l\'outil.');
   }
+  if(payload.ecartsDesignationOuUnite && payload.ecartsDesignationOuUnite.length){
+    lines.push('');
+    lines.push('Écarts de désignation/unité entre BPU et DQE (article bien apparié mais texte différent) (' + payload.ecartsDesignationOuUnite.length + ') :');
+    payload.ecartsDesignationOuUnite.forEach(function(e){
+      lines.push('- Art. ' + e.code + ' — ' + e.ecarts + ' (BPU : « ' + e.bpu + ' » / DQE : « ' + e.dqe + ' »)');
+    });
+  }
+  if(payload.articlesBpuSansCorrespondanceDqe && payload.articlesBpuSansCorrespondanceDqe.length){
+    lines.push('');
+    lines.push('Articles présents dans le BPU mais absents du DQE (' + payload.articlesBpuSansCorrespondanceDqe.length + ') : ' + payload.articlesBpuSansCorrespondanceDqe.join(', '));
+  }
+  if(payload.articlesDqeSansCorrespondanceBpu && payload.articlesDqeSansCorrespondanceBpu.length){
+    lines.push('');
+    lines.push('Articles présents dans le DQE mais absents du BPU (' + payload.articlesDqeSansCorrespondanceBpu.length + ') : ' + payload.articlesDqeSansCorrespondanceBpu.join(', '));
+  }
+  if(payload.appariesParDesignationSeulement && payload.appariesParDesignationSeulement.length){
+    lines.push('');
+    lines.push('Articles appariés par ressemblance de désignation (N° différent entre BPU et DQE) (' + payload.appariesParDesignationSeulement.length + ') :');
+    payload.appariesParDesignationSeulement.forEach(function(m){
+      lines.push('- BPU n°' + m.codeBpu + ' ↔ DQE n°' + m.codeDqe + ' (similitude ' + m.similitude + ') — à vérifier manuellement');
+    });
+  }
   _aiHistory.push({ role:'user', isData:true, content: lines.join('\n') });
   aiSaveHistory();
   aiRenderMessages();
+}
+
+// Demande l'écriture en lettres d'un montant, soit saisi directement, soit
+// retrouvé via un N° d'article (BPU puis DQE) — le calcul réel est fait par
+// l'outil BPU/DQE (core.wordsWithCurrency), jamais deviné par le modèle.
+function aiRequestWordsAmount(){
+  const fr = document.getElementById('bpu-frame');
+  if(!_bpuLoaded || !fr || !fr.contentWindow){
+    _aiHistory.push({ role:'assistant', content: "Ouvrez d'abord l'outil « BPU / DQE » (même sans fichier chargé si vous voulez juste convertir un montant), puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const saisie = prompt("Entrez soit un montant (ex: 1250000.50), soit un N° d'article du BPU/DQE (ex: 1.2) dont vous voulez le prix unitaire en lettres :");
+  if(saisie === null) return;
+  const val = saisie.trim();
+  if(!val) return;
+  // On laisse l'outil BPU/DQE décider : il essaie d'abord de retrouver un
+  // article portant exactement ce N°, et si aucun n'existe, interprète la
+  // saisie comme un montant — ça évite de confondre un N° du type "1.1"
+  // avec le montant 1,1 (même écriture avec un point).
+  const req = { query: val };
+
+  const btn = document.getElementById('ai-words-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳…'; }
+
+  let done = false;
+  const onMsg = function(ev){
+    const d = ev.data;
+    if(!d || d.type !== 'ot-ai-words-response' || done) return;
+    done = true;
+    window.removeEventListener('message', onMsg);
+    if(btn){ btn.disabled = false; btn.textContent = '🔤 Montant en lettres'; }
+    const r = d.payload;
+    let content;
+    if(r && r.ok){
+      content = '[Conversion en lettres — calculée par Ouvrage Track, ne pas en inventer d\'autre]\n' +
+        'Montant : ' + Number(r.amount).toLocaleString('fr-FR') + ' ' + r.currency + (r.source ? ' (' + r.source + ')' : '') + '\n' +
+        'En lettres : ' + r.words;
+    } else {
+      content = '⚠ ' + ((r && r.error) || 'Conversion impossible.');
+    }
+    _aiHistory.push({ role:'user', isData: !!(r && r.ok), content: content });
+    aiSaveHistory(); aiRenderMessages();
+  };
+  window.addEventListener('message', onMsg);
+  fr.contentWindow.postMessage({ type: 'ot-ai-request-words', payload: req }, '*');
+
+  setTimeout(function(){
+    if(done) return;
+    done = true;
+    window.removeEventListener('message', onMsg);
+    if(btn){ btn.disabled = false; btn.textContent = '🔤 Montant en lettres'; }
+    _aiHistory.push({ role:'assistant', content: "L'outil BPU/DQE n'a pas répondu. Réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+  }, 4000);
 }
 
 async function aiSend(){
@@ -10306,6 +10384,7 @@ async function aiSend(){
 document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-send-btn') aiSend();
   if(e.target && e.target.id === 'ai-snapshot-btn') aiRequestBpuDqeSnapshot();
+  if(e.target && e.target.id === 'ai-words-btn') aiRequestWordsAmount();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
@@ -14768,6 +14847,11 @@ label{font-size:11px}
   let dqeCfg = null, bpuCfg = null;
   let dqeAiSource = false, bpuAiSource = false;
   let bpuMeta = null, dqeMeta = null, bpuOrderedItems = null, dqeOrderedItems = null;
+  // Dernier résultat de rapprochement BPU/DQE (mémorisé pour que l'assistant IA
+  // puisse le réutiliser sans refaire le calcul) : codes des articles sans
+  // AUCUNE correspondance dans l'autre fichier, et codes appariés par
+  // désignation uniquement (N° différent entre BPU et DQE).
+  let _lastOnlyBpu = [], _lastOnlyDqe = [], _lastMatchedByDesignation = [];
 
   // ===================== Assistant IA (Gemini) =====================
   const GEMINI_KEY_STORAGE = 'gemini_api_key'; // clé UNIQUE partagée avec l'Agent IA
@@ -16220,6 +16304,9 @@ label{font-size:11px}
       matched = core.matchGroups(bpuGroups, bpuOrder, dqeGroups, bpuLabels, dqeLabels);
     }
     results = matched.results.map(r => ({...r, skip:false, editedCode: r.code}));
+    _lastOnlyBpu = matched.onlyBpu || [];
+    _lastOnlyDqe = matched.onlyDqe || [];
+    _lastMatchedByDesignation = matched.matchedByDesignation || [];
     renderOrphans(matched.onlyBpu, matched.onlyDqe, matched.matchedByDesignation);
     renderResults();
   }
@@ -18812,6 +18899,12 @@ label{font-size:11px}
       catch(e){ payload = { available: false, error: e.message }; }
       try { window.parent.postMessage({ type: 'ot-ai-snapshot-response', payload: payload }, '*'); } catch(e){}
     }
+    if (d && d.type === 'ot-ai-request-words'){
+      let payload;
+      try { payload = aiComputeWords(d.payload || {}); }
+      catch(e){ payload = { ok: false, error: e.message }; }
+      try { window.parent.postMessage({ type: 'ot-ai-words-response', payload: payload }, '*'); } catch(e){}
+    }
   });
 
   // ── Pont avec « Ouvrage Track AI » (application principale) ──────────────
@@ -18827,6 +18920,12 @@ label{font-size:11px}
     const counts = { ok: 0, multi: 0, partial: 0, missing: 0 };
     (results || []).forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
 
+    // Désignation/unité du BPU comparées à celles du DQE pour le même N°, afin
+    // de repérer un écart de texte même quand le prix a bien été retrouvé.
+    let dqeGroupsForCompare = {};
+    try { dqeGroupsForCompare = core.dqeGroupsFromLines(dqeLines || []); } catch(e){}
+    const normTxt = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
     const anomalies = (results || [])
       .filter(r => !r.skip && r.status && r.status !== 'ok')
       .slice(0, 60)
@@ -18836,6 +18935,27 @@ label{font-size:11px}
         statut: statusLabel ? statusLabel(r.status) : r.status,
         remarque: r.note || ''
       }));
+
+    // Écarts de désignation/unité entre BPU et DQE pour les articles par
+    // ailleurs bien appariés (statut OK) — anomalie silencieuse sinon.
+    const ecartsTexte = [];
+    (results || []).forEach(r => {
+      if (r.skip || r.status !== 'ok') return;
+      const entries = dqeGroupsForCompare[r.editedCode || r.code];
+      if (!entries || !entries.length) return;
+      const dqeEntry = entries[0];
+      const diffs = [];
+      if (dqeEntry.label && normTxt(dqeEntry.label) !== normTxt(r.label)) diffs.push('désignation différente');
+      if (dqeEntry.unit && r.unit && normTxt(dqeEntry.unit) !== normTxt(r.unit)) diffs.push('unité différente (BPU: ' + r.unit + ' / DQE: ' + dqeEntry.unit + ')');
+      if (diffs.length){
+        ecartsTexte.push({
+          code: stripLotPrefix(r.editedCode || r.code) || '(sans n°)',
+          bpu: r.label || '',
+          dqe: dqeEntry.label || '',
+          ecarts: diffs.join(' ; ')
+        });
+      }
+    });
 
     const dqeRowsActives = (dqeLines || []).filter(l => !l.skip);
     let totalHT = 0, dqeSansPrix = 0;
@@ -18854,8 +18974,62 @@ label{font-size:11px}
       totalHT_DQE: Math.round(totalHT * 100) / 100,
       dqeArticlesSansPrixUnitaire: dqeSansPrix,
       repartitionStatutsBpu: counts,
-      anomalies: anomalies
+      anomalies: anomalies,
+      ecartsDesignationOuUnite: ecartsTexte.slice(0, 30),
+      articlesBpuSansCorrespondanceDqe: (_lastOnlyBpu || []).map(c => stripLotPrefix(c)),
+      articlesDqeSansCorrespondanceBpu: (_lastOnlyDqe || []).map(c => stripLotPrefix(c)),
+      appariesParDesignationSeulement: (_lastMatchedByDesignation || []).map(m => ({
+        codeBpu: stripLotPrefix(m.bCode), codeDqe: stripLotPrefix(m.dCode), similitude: Math.round(m.score * 100) + '%'
+      }))
     };
+  }
+
+  // Calcule le montant en lettres pour un montant donné, OU pour l'article
+  // désigné par son N° (recherché dans le BPU, puis dans le DQE) — toujours
+  // avec la fonction de conversion réelle de l'application, jamais devinée
+  // par un modèle de langage.
+  function aiComputeWords(req){
+    const currency = (document.getElementById('optCurrency') && document.getElementById('optCurrency').value) || 'Dinars Algériens';
+    let amount = null, source = null;
+
+    // Permet soit l'ancien format { amount } / { code } (compatibilité), soit
+    // { query } où on essaie d'abord une correspondance exacte de N° d'article
+    // avant de retomber sur une interprétation en montant.
+    function tryAsCode(raw){
+      const code = core.normCode(raw);
+      const r = (results || []).find(x => core.normCode(x.editedCode || x.code) === code && !x.skip);
+      if (r && r.prix_u !== null && r.prix_u !== undefined && r.prix_u !== ''){
+        return { amount: core.parseFrNum(r.prix_u), source: 'prix unitaire BPU de l\'article ' + stripLotPrefix(code) };
+      }
+      const dqeGroups = core.dqeGroupsFromLines(dqeLines || []);
+      const entries = dqeGroups[code];
+      if (entries && entries.length && entries[0].pu !== null && entries[0].pu !== undefined && entries[0].pu !== ''){
+        return { amount: core.parseFrNum(entries[0].pu), source: 'prix unitaire DQE de l\'article ' + stripLotPrefix(code) };
+      }
+      return null;
+    }
+
+    if (req && req.query !== undefined && req.query !== null && req.query !== ''){
+      const found = tryAsCode(req.query);
+      if (found){ amount = found.amount; source = found.source; }
+      else {
+        const n = core.parseFrNum(req.query);
+        if (!isNaN(n)) { amount = n; source = 'montant saisi'; }
+        else return { ok: false, error: 'Aucun article portant le N° « ' + req.query + ' » n\'a été trouvé (avec un prix saisi), et ce n\'est pas non plus un montant valide.' };
+      }
+    } else if (req && req.amount !== undefined && req.amount !== null && req.amount !== ''){
+      amount = core.parseFrNum(req.amount);
+      source = 'montant saisi';
+    } else if (req && req.code){
+      const found = tryAsCode(req.code);
+      if (found){ amount = found.amount; source = found.source; }
+      else return { ok: false, error: 'Article ' + stripLotPrefix(core.normCode(req.code)) + ' introuvable, ou sans prix saisi, dans le BPU comme dans le DQE.' };
+    } else {
+      return { ok: false, error: 'Aucun montant ni N° d\'article fourni.' };
+    }
+    if (amount === null || isNaN(amount)) return { ok: false, error: 'Montant invalide.' };
+    const words = core.wordsWithCurrency(amount, currency);
+    return { ok: true, amount, source, currency, words: words.charAt(0).toUpperCase() + words.slice(1) };
   }
 })();
 <\/script>
