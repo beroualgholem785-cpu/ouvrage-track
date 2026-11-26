@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-25';
+    var __OT_BUILD = '2026-11-26';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -10159,6 +10159,9 @@ function aiBuildUI(){
         <button id="ai-generate-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">🖊️ Générer le document rempli (chiffres + lettres)</button>
       </span>
     </div>
+    <div style="padding:0 10px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button id="ai-marche-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre les données du marché (avenants / TS / TC / TD)</button>
+    </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
       <button id="ai-send-btn" class="btn-accent" style="padding:0 20px">Envoyer</button>
@@ -10289,6 +10292,108 @@ function aiAppendSnapshot(payload){
   _aiHistory.push({ role:'user', isData:true, content: lines.join('\n') });
   aiSaveHistory();
   aiRenderMessages();
+}
+
+// Construit un instantané des données du marché (avenants, TS/TC/TD, bilan
+// financier) à partir des fonctions de calcul RÉELLES de l'application
+// (calcGlobal, avSigned, seuils configurés...) — ces chiffres ne sont jamais
+// recalculés ni inventés par le modèle IA, seulement lus et mis en forme ici.
+// Contrairement au pont BPU/DQE (qui doit traverser l'iframe), ces données
+// vivent déjà dans le document principal : pas besoin de postMessage.
+function aiBuildMarchePublicSnapshot(){
+  if(!CURRENT_PROJECT || typeof calcGlobal !== 'function') return { available:false };
+  let g;
+  try { g = calcGlobal(); } catch(e){ return { available:false }; }
+
+  const mapTc = t => ({ desc: t.desc||t.designation||'', lot: t.lot||'', qty: t.qty||0, unite: t.unite||'', pu: t.pu||0, montant: (t.qty||0)*(t.pu||0), statut: t.statut||'-', avenant: t.av||null, pris: (t.av && typeof avSigned==='function') ? avSigned(t.av) : false });
+  const mapTd = t => ({ desc: t.des||'', lot: t.lot||'', art: t.art||'', qty: t.qty||0, unite: t.unit||'', pu: t.pu||0, montant: t.mTD!=null ? t.mTD : (t.qty||0)*(t.pu||0), avenant: t.av||null, pris: (t.av && typeof avSigned==='function') ? avSigned(t.av) : false });
+
+  const avenants = (P.avenants||[]).map((a,i) => ({
+    numero: a.num || ('#'+(i+1)),
+    objet: a.objet || '',
+    montant: a.montant || 0,
+    statut: a.statut || '-',
+    date: a.date || '-'
+  }));
+
+  return {
+    available: true,
+    projet: (CURRENT_PROJECT && CURRENT_PROJECT.name) || '',
+    devise: (typeof getDevise === 'function') ? getDevise() : 'DA',
+    seuilLegalTCTS: (typeof getSeuilTCTS === 'function') ? getSeuilTCTS() : 20,
+    budgetInitial: g.budgetInitial || 0,
+    avenantsSignesMontant: g.avSign || 0,
+    budgetActualise: g.budgetActualise || 0,
+    tcTotal: g.tc || 0,
+    tsTotal: g.ts || 0,
+    tdTotal: g.td || 0,
+    pctTC: g.pctTC || 0,
+    pctTS: g.pctTS || 0,
+    pctTD: g.pctTD || 0,
+    pctTCTSCumule: g.pctTSTCGlobal || 0,
+    seuilDepasse: (g.pctTSTCGlobal || 0) > ((typeof getSeuilTCTS === 'function') ? getSeuilTCTS() : 20),
+    nbAvenants: avenants.length,
+    avenants: avenants.slice(0, 30),
+    tc: (P.tc||[]).map(mapTc).slice(0, 30),
+    ts: (P.ts||[]).map(mapTc).slice(0, 30),
+    td: (P.td||[]).map(mapTd).slice(0, 30)
+  };
+}
+
+function aiRequestMarcheSnapshot(){
+  const btn = document.getElementById('ai-marche-btn');
+  let payload;
+  try { payload = aiBuildMarchePublicSnapshot(); }
+  catch(e){ payload = { available:false }; }
+  if(!payload.available){
+    _aiHistory.push({ role:'assistant', content: "Aucun projet n'est ouvert pour l'instant : ouvrez un projet, puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const f$ = n => (!n||isNaN(n)) ? ('0 ' + payload.devise) : Math.round(n).toLocaleString('fr-FR') + ' ' + payload.devise;
+  const fp = n => (n||0).toFixed(2) + '%';
+  const lines = [];
+  lines.push('[Données du marché — calculées par Ouvrage Track, ne pas en inventer d\'autres]');
+  if(payload.projet) lines.push('Projet : ' + payload.projet);
+  lines.push('Budget initial HT : ' + f$(payload.budgetInitial));
+  lines.push('Montant des avenants signés : ' + f$(payload.avenantsSignesMontant));
+  lines.push('Budget actualisé HT : ' + f$(payload.budgetActualise));
+  lines.push('TC (travaux complémentaires) : ' + f$(payload.tcTotal) + ' (' + fp(payload.pctTC) + ' du marché)');
+  lines.push('TS (travaux supplémentaires) : ' + f$(payload.tsTotal) + ' (' + fp(payload.pctTS) + ' du marché)');
+  lines.push('TD (travaux à déduire) : ' + f$(payload.tdTotal) + ' (' + fp(payload.pctTD) + ' du marché)');
+  lines.push('TC + TS cumulés : ' + fp(payload.pctTCTSCumule) + ' — seuil légal configuré : ' + payload.seuilLegalTCTS + '%' + (payload.seuilDepasse ? ' — ⚠ SEUIL DÉPASSÉ, avenant à soumettre à la commission des marchés compétente' : ' — seuil respecté'));
+  lines.push('');
+  lines.push('Avenants (' + payload.nbAvenants + ') :');
+  if(payload.avenants.length){
+    payload.avenants.forEach(a => {
+      lines.push('- ' + a.numero + ' | ' + a.objet + ' | ' + f$(a.montant) + ' | statut : ' + a.statut + ' | ' + a.date);
+    });
+  } else {
+    lines.push('Aucun avenant enregistré.');
+  }
+  if(payload.tc.length){
+    lines.push('');
+    lines.push('Travaux complémentaires (TC) détaillés (' + payload.tc.length + ') :');
+    payload.tc.forEach(t => {
+      lines.push('- ' + t.desc + ' | lot ' + t.lot + ' | ' + t.qty + ' ' + t.unite + ' × ' + f$(t.pu) + ' = ' + f$(t.montant) + ' | statut : ' + t.statut + (t.avenant ? (' | avenant ' + t.avenant + (t.pris ? ' (signé, pris en compte)' : ' (non signé, PAS encore pris en compte)')) : ' | sans avenant'));
+    });
+  }
+  if(payload.ts.length){
+    lines.push('');
+    lines.push('Travaux supplémentaires (TS) détaillés (' + payload.ts.length + ') :');
+    payload.ts.forEach(t => {
+      lines.push('- ' + t.desc + ' | lot ' + t.lot + ' | ' + t.qty + ' ' + t.unite + ' × ' + f$(t.pu) + ' = ' + f$(t.montant) + ' | statut : ' + t.statut + (t.avenant ? (' | avenant ' + t.avenant + (t.pris ? ' (signé, pris en compte)' : ' (non signé, PAS encore pris en compte)')) : ' | sans avenant'));
+    });
+  }
+  if(payload.td.length){
+    lines.push('');
+    lines.push('Travaux à déduire (TD) détaillés (' + payload.td.length + ') :');
+    payload.td.forEach(t => {
+      lines.push('- ' + t.desc + ' | lot ' + t.lot + ' | art. ' + t.art + ' | ' + t.qty + ' ' + t.unite + ' × ' + f$(t.pu) + ' = ' + f$(t.montant) + ' déduit' + (t.avenant ? (' | avenant ' + t.avenant + (t.pris ? ' (signé, pris en compte)' : ' (non signé, PAS encore pris en compte)')) : ' | sans avenant'));
+    });
+  }
+  _aiHistory.push({ role:'user', isData:true, content: lines.join('\n') });
+  aiSaveHistory(); aiRenderMessages();
 }
 
 // Demande l'écriture en lettres d'un montant, soit saisi directement, soit
@@ -10450,6 +10555,7 @@ document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-snapshot-btn') aiRequestBpuDqeSnapshot();
   if(e.target && e.target.id === 'ai-words-btn') aiRequestWordsAmount();
   if(e.target && e.target.id === 'ai-generate-btn') aiRequestGenerateFilled();
+  if(e.target && e.target.id === 'ai-marche-btn') aiRequestMarcheSnapshot();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
