@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-26';
+    var __OT_BUILD = '2026-11-27';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -10161,6 +10161,7 @@ function aiBuildUI(){
     </div>
     <div style="padding:0 10px 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button id="ai-marche-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre les données du marché (avenants / TS / TC / TD)</button>
+      <button id="ai-suivi-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre le suivi de chantier (avancement / retard)</button>
     </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
@@ -10396,6 +10397,106 @@ function aiRequestMarcheSnapshot(){
   aiSaveHistory(); aiRenderMessages();
 }
 
+// Construit un instantané du suivi de chantier (avancement physique/théorique,
+// retard, alertes budget/quantité) à partir des fonctions de calcul RÉELLES de
+// l'application (calcPhysical, calcPhysicalLot, alertesBudgetLot, alertes) —
+// ces chiffres ne sont jamais recalculés ni inventés par le modèle IA. Même
+// scope que l'assistant marché public : pas de pont postMessage nécessaire.
+function aiBuildSuiviChantierSnapshot(){
+  if(!CURRENT_PROJECT || typeof calcPhysical !== 'function') return { available:false };
+  let c;
+  try { c = calcPhysical(); } catch(e){ return { available:false }; }
+
+  const fmtDate = d => (d && !isNaN(new Date(d).getTime())) ? new Date(d).toLocaleDateString('fr-FR') : null;
+
+  const lots = (P.lots||[]).map(lot => ({
+    nom: lot.name || lot.nom || lot.id,
+    pct: (typeof calcPhysicalLot === 'function') ? calcPhysicalLot(lot) : 0
+  }));
+
+  let budgetAlerts = [], qtyAlerts = [];
+  try { budgetAlerts = (typeof alertesBudgetLot === 'function') ? alertesBudgetLot() : []; } catch(e){}
+  try { qtyAlerts = (typeof alertes === 'function') ? alertes() : []; } catch(e){}
+
+  return {
+    available: true,
+    projet: (CURRENT_PROJECT && CURRENT_PROJECT.name) || '',
+    pctPhysique: c.pctPhysique || 0,
+    pctTheorique: c.pctTheorique || 0,
+    retard: c.retard || 0,
+    statutDelai: c.statutDelai || 'ok',
+    joursEcoules: Math.round(c.joursEcoules||0),
+    joursTotaux: Math.round(c.joursTotaux||0),
+    joursArret: Math.round(c.joursArret||0),
+    joursProrogation: c.joursProrogation||0,
+    enArretActuellement: !!c.enArretActuellement,
+    dateDebut: c.delai ? fmtDate(c.delai.debut) : null,
+    dateFinContrat: c.delai ? fmtDate(c.delai.finContrat) : null,
+    dateFinPrevue: c.delai ? fmtDate(c.delai.finPrev) : null,
+    seuilAlerte: getSeuilAlerte(),
+    seuilRetard: getSeuilRetard(),
+    seuilAlerteBudgetLot: (typeof getSeuilAlerteBudgetLot === 'function') ? getSeuilAlerteBudgetLot() : 90,
+    lots: lots.slice(0, 40),
+    alertesBudgetLot: budgetAlerts.slice(0, 20).map(a => ({ lot: a.lotName || a.lot, pct: a.pct, budget: a.budget, real: a.real })),
+    alertesQuantite: qtyAlerts.slice(0, 20).map(a => ({ lot: a.lotName || a.lot, article: a.art, qteMarche: a.qD, qteRealisee: a.qR, depassement: a.qTS, montantTS: a.mTS }))
+  };
+}
+
+function aiRequestSuiviSnapshot(){
+  let payload;
+  try { payload = aiBuildSuiviChantierSnapshot(); }
+  catch(e){ payload = { available:false }; }
+  if(!payload.available){
+    _aiHistory.push({ role:'assistant', content: "Aucun projet n'est ouvert pour l'instant : ouvrez un projet, puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const devise = (typeof getDevise === 'function') ? getDevise() : 'DA';
+  const f$ = n => (!n||isNaN(n)) ? ('0 ' + devise) : Math.round(n).toLocaleString('fr-FR') + ' ' + devise;
+  const fp = n => (n||0).toFixed(2) + '%';
+  const statutLabel = {
+    ok: 'Dans les délais',
+    avance: 'En avance sur le planning',
+    alerte: 'Alerte — proche du seuil de retard',
+    retard: '⚠ EN RETARD',
+    arret: 'Chantier à l\'arrêt (OS d\'arrêt en cours)'
+  }[payload.statutDelai] || payload.statutDelai;
+
+  const lines = [];
+  lines.push('[Données de suivi de chantier — calculées par Ouvrage Track, ne pas en inventer d\'autres]');
+  if(payload.projet) lines.push('Projet : ' + payload.projet);
+  lines.push('Avancement physique réel : ' + fp(payload.pctPhysique));
+  lines.push('Avancement théorique (planning) : ' + fp(payload.pctTheorique));
+  lines.push('Écart (théorique − réel) : ' + (payload.retard >= 0 ? '+' : '') + payload.retard.toFixed(2) + ' points');
+  lines.push('Statut délai : ' + statutLabel + ' (seuil alerte : ' + payload.seuilAlerte + ' pts, seuil retard : ' + payload.seuilRetard + ' pts)');
+  if(payload.dateDebut) lines.push('Début du marché : ' + payload.dateDebut);
+  if(payload.dateFinContrat) lines.push('Fin contractuelle initiale : ' + payload.dateFinContrat);
+  if(payload.dateFinPrevue) lines.push('Fin prévisionnelle (arrêts + prorogations inclus) : ' + payload.dateFinPrevue);
+  lines.push('Jours écoulés : ' + payload.joursEcoules + ' / ' + payload.joursTotaux + ' jours (dont ' + payload.joursArret + ' j d\'arrêt, ' + payload.joursProrogation + ' j de prorogation)');
+  if(payload.enArretActuellement) lines.push('⚠ Le chantier est actuellement À L\'ARRÊT (ordre de service d\'arrêt en cours, non encore repris).');
+
+  if(payload.lots.length){
+    lines.push('');
+    lines.push('Avancement physique par lot :');
+    payload.lots.forEach(l => { lines.push('- ' + l.nom + ' : ' + fp(l.pct)); });
+  }
+
+  if(payload.alertesBudgetLot.length){
+    lines.push('');
+    lines.push('Lots en alerte budgétaire (réalisé ≥ ' + payload.seuilAlerteBudgetLot + '% du budget du lot) (' + payload.alertesBudgetLot.length + ') :');
+    payload.alertesBudgetLot.forEach(a => { lines.push('- ' + a.lot + ' : ' + fp(a.pct) + ' du budget du lot consommé (' + f$(a.real) + ' / ' + f$(a.budget) + ')'); });
+  }
+
+  if(payload.alertesQuantite.length){
+    lines.push('');
+    lines.push('Articles en dépassement de quantité, pas encore couverts par un TS (' + payload.alertesQuantite.length + ') :');
+    payload.alertesQuantite.forEach(a => { lines.push('- ' + a.article + ' (lot ' + a.lot + ') : réalisé ' + a.qteRealisee + ' pour ' + a.qteMarche + ' prévu, dépassement ' + a.depassement + ' → incidence estimée ' + f$(a.montantTS)); });
+  }
+
+  _aiHistory.push({ role:'user', isData:true, content: lines.join('\n') });
+  aiSaveHistory(); aiRenderMessages();
+}
+
 // Demande l'écriture en lettres d'un montant, soit saisi directement, soit
 // retrouvé via un N° d'article (BPU puis DQE) — le calcul réel est fait par
 // l'outil BPU/DQE (core.wordsWithCurrency), jamais deviné par le modèle.
@@ -10556,6 +10657,7 @@ document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-words-btn') aiRequestWordsAmount();
   if(e.target && e.target.id === 'ai-generate-btn') aiRequestGenerateFilled();
   if(e.target && e.target.id === 'ai-marche-btn') aiRequestMarcheSnapshot();
+  if(e.target && e.target.id === 'ai-suivi-btn') aiRequestSuiviSnapshot();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
