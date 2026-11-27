@@ -10163,6 +10163,7 @@ function aiBuildUI(){
       <button id="ai-marche-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre les données du marché (avenants / TS / TC / TD)</button>
       <button id="ai-suivi-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre le suivi de chantier (avancement / retard)</button>
       <button id="ai-rapport-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📝 Générer le rapport d'avancement périodique (Word + PDF)</button>
+      <button id="ai-courrier-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">✉️ Rédiger une correspondance officielle (Word + PDF)</button>
     </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
@@ -10578,6 +10579,184 @@ async function aiGenerateRapportAvancement(){
   aiSaveHistory(); aiRenderMessages();
 }
 
+// Met en forme et télécharge une correspondance officielle au format Word.
+// L'en-tête (expéditeur, destinataire, objet, référence) vient des données
+// réelles du projet et de ce que l'utilisateur a saisi lui-même — seul le
+// corps du courrier (paragraphes) est rédigé par le modèle IA.
+async function aiExportCourrierWord(meta, bodyText){
+  if(!window.docx) throw new Error('Bibliothèque Word non chargée');
+  const D = window.docx;
+  const dateStr = new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+  const paragraphs = (bodyText||'').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const proj = CURRENT_PROJECT || {};
+
+  const children = [];
+  if(proj.entreprise) children.push(new D.Paragraph({ children:[new D.TextRun({ text: proj.entreprise, bold:true, size:22, font:'Calibri' })] }));
+  if(proj.name) children.push(new D.Paragraph({ spacing:{after:200}, children:[new D.TextRun({ text: proj.name, size:18, color:'64748B', font:'Calibri' })] }));
+  children.push(new D.Paragraph({ text:'' }));
+  children.push(new D.Paragraph({ alignment: D.AlignmentType.RIGHT, spacing:{after:300}, children:[new D.TextRun({ text: (proj.wilaya ? proj.wilaya + ', le ' : 'Le ') + dateStr, size:20, font:'Calibri' })] }));
+  (meta.destinataire||'').split(/\n/).forEach(line => {
+    if(line.trim()) children.push(new D.Paragraph({ children:[new D.TextRun({ text: line.trim(), bold:true, size:20, font:'Calibri' })] }));
+  });
+  children.push(new D.Paragraph({ spacing:{after:200}, text:'' }));
+  children.push(new D.Paragraph({ spacing:{after:80}, children:[new D.TextRun({ text:'Objet : ', bold:true, size:22, font:'Calibri' }), new D.TextRun({ text: meta.objet||'', size:22, font:'Calibri' })] }));
+  if(meta.reference) children.push(new D.Paragraph({ spacing:{after:200}, children:[new D.TextRun({ text:'Référence : ', bold:true, size:20, font:'Calibri' }), new D.TextRun({ text: meta.reference, size:20, font:'Calibri' })] }));
+  else children.push(new D.Paragraph({ spacing:{after:200}, text:'' }));
+
+  paragraphs.forEach(p => {
+    children.push(new D.Paragraph({ spacing:{after:200}, alignment: D.AlignmentType.JUSTIFIED, children:[new D.TextRun({ text:p, size:22, font:'Calibri' })] }));
+  });
+
+  const doc2 = new D.Document({
+    sections:[{
+      properties:{ page:{ size:{width:11906,height:16838}, margin:{top:1440,right:1440,bottom:1440,left:1440} } },
+      children: children
+    }]
+  });
+  const blob = await D.Packer.toBlob(doc2);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const slug = (meta.objet||'courrier_officiel').slice(0,40).replace(/[^\p{L}\p{N}\- ]/gu,'').trim().replace(/\s+/g,'_') || 'courrier_officiel';
+  a.download = 'Courrier_' + slug + '_' + dateStr.replace(/\s+/g,'-') + '.docx';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// Même courrier, mais au format PDF (mise en page simple de lettre, via
+// jsPDF, déjà chargé dans l'application).
+function aiExportCourrierPDF(meta, bodyText){
+  if(!window.jspdf) throw new Error('Bibliothèque PDF non chargée');
+  const jsPDF = window.jspdf.jsPDF;
+  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const proj = CURRENT_PROJECT || {};
+  const dateStr = new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+  const W = 210, MAR = 25, CW = W - 2*MAR;
+  let y = 25;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.setTextColor(20,20,20);
+  if(proj.entreprise){ doc.text(proj.entreprise, MAR, y); y += 6; }
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(100,100,100);
+  if(proj.name){ doc.text(proj.name, MAR, y); y += 10; } else { y += 4; }
+
+  doc.setTextColor(20,20,20); doc.setFontSize(11);
+  doc.text((proj.wilaya ? proj.wilaya + ', le ' : 'Le ') + dateStr, W - MAR, y, { align:'right' });
+  y += 14;
+
+  (meta.destinataire||'').split(/\n/).forEach(line => {
+    if(line.trim()){ doc.setFont('helvetica','bold'); doc.text(line.trim(), MAR, y); y += 6; }
+  });
+  y += 8;
+
+  doc.setFont('helvetica','bold'); doc.text('Objet : ', MAR, y);
+  doc.setFont('helvetica','normal');
+  const objetLines = doc.splitTextToSize(meta.objet||'', CW - 18);
+  doc.text(objetLines, MAR + 18, y);
+  y += objetLines.length * 6;
+
+  if(meta.reference){
+    doc.setFont('helvetica','bold'); doc.text('Référence : ', MAR, y);
+    doc.setFont('helvetica','normal');
+    const refLines = doc.splitTextToSize(meta.reference, CW - 26);
+    doc.text(refLines, MAR + 26, y);
+    y += refLines.length * 6 + 6;
+  } else { y += 6; }
+  y += 4;
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(11);
+  const paragraphs = (bodyText||'').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  paragraphs.forEach(p => {
+    const lines = doc.splitTextToSize(p, CW);
+    lines.forEach(line => {
+      if(y > 275){ doc.addPage(); y = 25; }
+      doc.text(line, MAR, y);
+      y += 6;
+    });
+    y += 4;
+  });
+
+  const slug = (meta.objet||'courrier_officiel').slice(0,40).replace(/[^\p{L}\p{N}\- ]/gu,'').trim().replace(/\s+/g,'_') || 'courrier_officiel';
+  doc.save('Courrier_' + slug + '_' + dateStr.replace(/\s+/g,'-') + '.pdf');
+}
+
+// Rédige une correspondance officielle : collecte destinataire/objet/points à
+// partir de ce que saisit l'utilisateur, demande au modèle local de rédiger
+// UNIQUEMENT le corps du courrier (le modèle ne connaît ni les coordonnées
+// exactes de l'entreprise/du maître d'ouvrage ni la mise en page officielle —
+// ces éléments viennent des vraies données du projet et sont ajoutés par
+// l'application, jamais par le modèle), puis télécharge Word + PDF.
+async function aiRequestCourrierOfficiel(){
+  if(_aiBusy) return;
+  if(!CURRENT_PROJECT){
+    _aiHistory.push({ role:'assistant', content: "Aucun projet n'est ouvert pour l'instant : ouvrez un projet, puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const destinataire = prompt("À qui adressez-vous ce courrier ? (ex : Monsieur le Directeur des Travaux Publics de la Wilaya de ...)");
+  if(destinataire === null || !destinataire.trim()) return;
+  const objet = prompt("Quel est l'objet du courrier ? (ex : Mise en demeure pour retard d'exécution des travaux)");
+  if(objet === null || !objet.trim()) return;
+  const points = prompt("Que voulez-vous dire dans ce courrier ? Décrivez en quelques mots les points à aborder (l'assistant rédigera le texte complet à partir de ça) :");
+  if(points === null || !points.trim()) return;
+  const reference = prompt("Référence à indiquer (optionnel, ex : Marché N° " + (CURRENT_PROJECT.numMarche||'...') + ") — laissez vide si aucune :") || '';
+
+  const meta = { destinataire: destinataire.trim(), objet: objet.trim(), reference: reference.trim() };
+
+  const proj = CURRENT_PROJECT;
+  const identLines = [];
+  identLines.push('[INFORMATIONS RÉELLES DU PROJET — à utiliser telles quelles, ne jamais inventer un nom, un numéro ou une date non fournis ici]');
+  if(proj.name) identLines.push('Projet : ' + proj.name);
+  if(proj.moa) identLines.push('Maître d\'ouvrage : ' + proj.moa);
+  if(proj.entreprise) identLines.push('Entreprise : ' + proj.entreprise);
+  if(proj.wilaya) identLines.push('Wilaya : ' + proj.wilaya);
+  if(proj.numMarche) identLines.push('N° de marché : ' + proj.numMarche);
+  identLines.push('Date du jour : ' + new Date().toLocaleDateString('fr-FR'));
+
+  const instruction = "Rédige UNIQUEMENT le corps d'un courrier officiel algérien (administration/marché public), en français, ton formel et respectueux. " +
+    "Destinataire : " + meta.destinataire + ". Objet : " + meta.objet + ". " +
+    "Points à aborder (donnés par l'utilisateur) : " + points.trim() + ". " +
+    "Commence directement par la formule d'appel (ex : \"Monsieur,\") et termine par une formule de politesse administrative standard (ex : \"Veuillez agréer, Monsieur, l'expression de ma considération distinguée.\"). " +
+    "N'ajoute ni en-tête, ni date, ni objet, ni référence, ni bloc signature (déjà gérés séparément) : uniquement le texte du courrier, en paragraphes séparés par une ligne vide. " +
+    "N'invente aucun chiffre, aucune date précise, aucun nom propre qui ne t'a pas été donné ci-dessus ou par l'utilisateur : utilise une formule générique (ex : \"dans les meilleurs délais\") si une information précise manque.";
+
+  _aiBusy = true;
+  const btn = document.getElementById('ai-courrier-btn');
+  const btnLabel = "✉️ Rédiger une correspondance officielle (Word + PDF)";
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Rédaction en cours…'; }
+  _aiHistory.push({ role:'user', content: 'Rédige un courrier officiel — Destinataire : ' + meta.destinataire + ' | Objet : ' + meta.objet + ' | Points : ' + points.trim() });
+  _aiHistory.push({ role:'assistant', content: '⏳ Rédaction du courrier en cours…' });
+  aiSaveHistory(); aiRenderMessages();
+
+  const modelInput = document.getElementById('ai-model-input');
+  const model = (modelInput && modelInput.value.trim()) || AI_DEFAULT_MODEL;
+
+  try{
+    const messages = [
+      { role:'system', content: AI_SYSTEM_PROMPT },
+      { role:'user', content: identLines.join('\n') + '\n\n' + instruction }
+    ];
+    const res = await fetch(aiGetUrl() + '/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model: model, messages: messages, stream:false })
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const reply = (data.message && data.message.content) || '';
+    if(!reply) throw new Error('réponse vide');
+
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: reply };
+    aiSaveHistory(); aiRenderMessages();
+
+    await aiExportCourrierWord(meta, reply);
+    aiExportCourrierPDF(meta, reply);
+    _aiHistory.push({ role:'assistant', content: '✓ Courrier généré et téléchargé en Word et en PDF. Relisez-le avant envoi : vérifiez les noms, dates et références. Vous pouvez me demander de corriger un passage puis recliquer sur le bouton pour recommencer.' });
+  } catch(e){
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: "⚠️ Impossible de générer le courrier. Vérifiez qu'Ollama est installé et lancé, et que le modèle « " + model + " » est bien téléchargé. Détail : " + (e && e.message || '') };
+  }
+  _aiBusy = false;
+  if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
+  aiSaveHistory(); aiRenderMessages();
+}
+
 // Demande l'écriture en lettres d'un montant, soit saisi directement, soit
 // retrouvé via un N° d'article (BPU puis DQE) — le calcul réel est fait par
 // l'outil BPU/DQE (core.wordsWithCurrency), jamais deviné par le modèle.
@@ -10740,6 +10919,7 @@ document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-marche-btn') aiRequestMarcheSnapshot();
   if(e.target && e.target.id === 'ai-suivi-btn') aiRequestSuiviSnapshot();
   if(e.target && e.target.id === 'ai-rapport-btn') aiGenerateRapportAvancement();
+  if(e.target && e.target.id === 'ai-courrier-btn') aiRequestCourrierOfficiel();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
