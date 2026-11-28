@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-27';
+    var __OT_BUILD = '2026-11-28';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -10164,6 +10164,7 @@ function aiBuildUI(){
       <button id="ai-suivi-btn" class="btn" style="font-size:12px;padding:5px 10px">📎 Joindre le suivi de chantier (avancement / retard)</button>
       <button id="ai-rapport-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📝 Générer le rapport d'avancement périodique (Word + PDF)</button>
       <button id="ai-courrier-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">✉️ Rédiger une correspondance officielle (Word + PDF)</button>
+      <button id="ai-pv-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📋 Rédiger un PV de réunion (Word + PDF)</button>
     </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
@@ -10757,6 +10758,236 @@ async function aiRequestCourrierOfficiel(){
   aiSaveHistory(); aiRenderMessages();
 }
 
+// Découpe le corps structuré renvoyé par le modèle (pour le PV de réunion) en
+// jetons simples : "## " = titre de section, "- " = puce, sinon paragraphe
+// justifié. Format volontairement simple (pas de tableau), pour rester fiable
+// avec un petit modèle local.
+function pvParseBody(bodyText){
+  const lines = (bodyText||'').split(/\n/);
+  const tokens = [];
+  let buf = [];
+  function flush(){
+    const t = buf.join(' ').trim();
+    if(t) tokens.push({ type:'p', text:t });
+    buf = [];
+  }
+  lines.forEach(line => {
+    const l = line.trim();
+    if(!l){ flush(); return; }
+    if(/^##\s+/.test(l)){ flush(); tokens.push({ type:'h', text:l.replace(/^##\s+/,'') }); return; }
+    if(/^[-•]\s+/.test(l)){ flush(); tokens.push({ type:'li', text:l.replace(/^[-•]\s+/,'') }); return; }
+    buf.push(l);
+  });
+  flush();
+  return tokens;
+}
+
+// Met en forme et télécharge le PV de réunion au format Word. L'en-tête
+// (objet, date, lieu, participants) vient de ce que l'utilisateur a saisi
+// lui-même — seul le corps (points abordés / décisions) est structuré par le
+// modèle IA à partir des notes brutes de l'utilisateur.
+async function aiExportPVWord(meta, bodyText){
+  if(!window.docx) throw new Error('Bibliothèque Word non chargée');
+  const D = window.docx;
+  const proj = CURRENT_PROJECT || {};
+  const tokens = pvParseBody(bodyText);
+
+  const children = [];
+  children.push(new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing:{after:120}, children:[new D.TextRun({ text:'PROCÈS-VERBAL DE RÉUNION', bold:true, size:28, font:'Calibri' })] }));
+  if(proj.name) children.push(new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing:{after:300}, children:[new D.TextRun({ text: proj.name, size:20, color:'64748B', font:'Calibri' })] }));
+
+  function metaLine(label, value){
+    return new D.Paragraph({ spacing:{after:80}, children:[new D.TextRun({ text:label+' : ', bold:true, size:21, font:'Calibri' }), new D.TextRun({ text: value||'-', size:21, font:'Calibri' })] });
+  }
+  children.push(metaLine('Objet', meta.objet));
+  children.push(metaLine('Date', meta.date));
+  children.push(metaLine('Lieu', meta.lieu));
+  children.push(new D.Paragraph({ spacing:{before:80,after:40}, children:[new D.TextRun({ text:'Participants :', bold:true, size:21, font:'Calibri' })] }));
+  (meta.participants||[]).forEach(p => {
+    children.push(new D.Paragraph({ numbering:{reference:'bullets', level:0}, spacing:{after:20}, children:[new D.TextRun({ text:p, size:20, font:'Calibri' })] }));
+  });
+  children.push(new D.Paragraph({ text:'', spacing:{after:200} }));
+
+  tokens.forEach(tok => {
+    if(tok.type === 'h'){
+      children.push(new D.Paragraph({ spacing:{before:200,after:120}, children:[new D.TextRun({ text:tok.text, bold:true, size:23, font:'Calibri' })] }));
+    } else if(tok.type === 'li'){
+      children.push(new D.Paragraph({ numbering:{reference:'bullets', level:0}, spacing:{after:80}, children:[new D.TextRun({ text:tok.text, size:21, font:'Calibri' })] }));
+    } else {
+      children.push(new D.Paragraph({ spacing:{after:160}, alignment: D.AlignmentType.JUSTIFIED, children:[new D.TextRun({ text:tok.text, size:21, font:'Calibri' })] }));
+    }
+  });
+
+  children.push(new D.Paragraph({ text:'', spacing:{before:300} }));
+  children.push(new D.Paragraph({ alignment: D.AlignmentType.RIGHT, children:[new D.TextRun({ text:'Dressé le ' + meta.date, italics:true, size:19, font:'Calibri' })] }));
+
+  const doc2 = new D.Document({
+    numbering:{ config:[
+      { reference:'bullets', levels:[{ level:0, format:D.LevelFormat.BULLET, text:'•', alignment:D.AlignmentType.LEFT,
+        style:{ paragraph:{ indent:{left:560, hanging:280} } } }] }
+    ]},
+    sections:[{
+      properties:{ page:{ size:{width:11906,height:16838}, margin:{top:1440,right:1440,bottom:1440,left:1440} } },
+      children: children
+    }]
+  });
+  const blob = await D.Packer.toBlob(doc2);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const dateSlug = (meta.date||'').replace(/[^\d]/g,'-');
+  const slug = (meta.objet||'reunion').slice(0,40).replace(/[^\p{L}\p{N}\- ]/gu,'').trim().replace(/\s+/g,'_') || 'reunion';
+  a.download = 'PV_' + slug + '_' + (dateSlug||'date') + '.docx';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// Même PV, mais au format PDF, via jsPDF.
+function aiExportPVPDF(meta, bodyText){
+  if(!window.jspdf) throw new Error('Bibliothèque PDF non chargée');
+  const jsPDF = window.jspdf.jsPDF;
+  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const proj = CURRENT_PROJECT || {};
+  const tokens = pvParseBody(bodyText);
+  const W = 210, MAR = 25, CW = W - 2*MAR;
+  let y = 25;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(20,20,20);
+  doc.text('PROCÈS-VERBAL DE RÉUNION', W/2, y, { align:'center' }); y += 8;
+  if(proj.name){
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(100,100,100);
+    doc.text(proj.name, W/2, y, { align:'center' }); y += 10;
+  } else { y += 4; }
+
+  doc.setTextColor(20,20,20); doc.setFontSize(11);
+  function metaLine(label, value){
+    doc.setFont('helvetica','bold'); doc.text(label+' : ', MAR, y);
+    doc.setFont('helvetica','normal');
+    const lines = doc.splitTextToSize(value||'-', CW - 30);
+    doc.text(lines, MAR + 30, y);
+    y += lines.length * 6;
+  }
+  metaLine('Objet', meta.objet);
+  metaLine('Date', meta.date);
+  metaLine('Lieu', meta.lieu);
+  y += 2;
+  doc.setFont('helvetica','bold'); doc.text('Participants :', MAR, y); y += 6;
+  doc.setFont('helvetica','normal');
+  (meta.participants||[]).forEach(p => {
+    const lines = doc.splitTextToSize('• ' + p, CW - 6);
+    if(y > 275){ doc.addPage(); y = 25; }
+    doc.text(lines, MAR + 4, y);
+    y += lines.length * 6;
+  });
+  y += 8;
+
+  tokens.forEach(tok => {
+    if(y > 270){ doc.addPage(); y = 25; }
+    if(tok.type === 'h'){
+      doc.setFont('helvetica','bold'); doc.setFontSize(12);
+      const lines = doc.splitTextToSize(tok.text, CW);
+      lines.forEach(line => { if(y > 275){ doc.addPage(); y = 25; } doc.text(line, MAR, y); y += 7; });
+      y += 2;
+      doc.setFontSize(11);
+    } else if(tok.type === 'li'){
+      doc.setFont('helvetica','normal');
+      const lines = doc.splitTextToSize('• ' + tok.text, CW - 4);
+      lines.forEach((line, i) => { if(y > 275){ doc.addPage(); y = 25; } doc.text(line, MAR + (i===0?0:4), y); y += 6; });
+      y += 2;
+    } else {
+      doc.setFont('helvetica','normal');
+      const lines = doc.splitTextToSize(tok.text, CW);
+      lines.forEach(line => { if(y > 275){ doc.addPage(); y = 25; } doc.text(line, MAR, y); y += 6; });
+      y += 4;
+    }
+  });
+
+  const dateSlug = (meta.date||'').replace(/[^\d]/g,'-');
+  const slug = (meta.objet||'reunion').slice(0,40).replace(/[^\p{L}\p{N}\- ]/gu,'').trim().replace(/\s+/g,'_') || 'reunion';
+  doc.save('PV_' + slug + '_' + (dateSlug||'date') + '.pdf');
+}
+
+// Rédige un PV / compte rendu de réunion : collecte objet/date/lieu/
+// participants directement (jamais inventés par le modèle), puis demande au
+// modèle local de structurer les notes brutes de l'utilisateur en "Points
+// abordés" et "Décisions et actions à suivre", sans inventer de décision, de
+// responsable ou de délai non mentionné.
+async function aiRequestPVReunion(){
+  if(_aiBusy) return;
+  if(!CURRENT_PROJECT){
+    _aiHistory.push({ role:'assistant', content: "Aucun projet n'est ouvert pour l'instant : ouvrez un projet, puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  const objet = prompt("Quel est l'objet de la réunion ? (ex : Réunion de chantier hebdomadaire)");
+  if(objet === null || !objet.trim()) return;
+  const todayStr = new Date().toLocaleDateString('fr-FR');
+  const dateInput = prompt("Date de la réunion :", todayStr);
+  if(dateInput === null) return;
+  const date = dateInput.trim() || todayStr;
+  const lieu = prompt("Lieu de la réunion :");
+  if(lieu === null || !lieu.trim()) return;
+  const participantsRaw = prompt("Participants à la réunion (un nom/fonction par ligne) :");
+  if(participantsRaw === null || !participantsRaw.trim()) return;
+  const participants = participantsRaw.split(/\n/).map(s => s.trim()).filter(Boolean);
+  const notes = prompt("Points discutés / notes de la réunion — décrivez librement ce qui a été dit, décidé, et les actions à suivre (l'assistant va structurer tout ça en PV) :");
+  if(notes === null || !notes.trim()) return;
+
+  const meta = { objet: objet.trim(), date: date, lieu: lieu.trim(), participants: participants };
+
+  const identLines = [];
+  identLines.push('[INFORMATIONS RÉELLES DE LA RÉUNION — déjà traitées séparément par l\'application, ne les répète pas dans ta réponse]');
+  identLines.push('Objet : ' + meta.objet);
+  identLines.push('Date : ' + meta.date);
+  identLines.push('Lieu : ' + meta.lieu);
+  identLines.push('Participants : ' + participants.join(', '));
+
+  const instruction = "À partir des notes brutes ci-dessous (prises par l'utilisateur pendant une réunion de chantier), rédige UNIQUEMENT le corps d'un compte rendu de réunion structuré, en français, selon EXACTEMENT ce format :\n\n" +
+    "## Points abordés\n" +
+    "(une ligne par point, chaque ligne commençant par \"- \")\n\n" +
+    "## Décisions et actions à suivre\n" +
+    "(une ligne par décision/action, chaque ligne commençant par \"- \" ; indique le responsable et le délai UNIQUEMENT s'ils sont mentionnés dans les notes, sous la forme \"... — Responsable : ... — Délai : ...\", sinon n'indique que la décision/action sans les inventer)\n\n" +
+    "Règles strictes : reformule et structure UNIQUEMENT ce qui figure dans les notes de l'utilisateur ci-dessous. N'invente aucun participant, aucune décision, aucune date précise, aucun chiffre, aucun responsable et aucun délai qui n'y figure pas. N'ajoute ni titre de PV, ni objet, ni date, ni lieu, ni liste de participants (déjà gérés séparément). N'utilise pas d'autres titres de section que les deux ci-dessus.\n\n" +
+    "Notes brutes de l'utilisateur :\n" + notes.trim();
+
+  _aiBusy = true;
+  const btn = document.getElementById('ai-pv-btn');
+  const btnLabel = "📋 Rédiger un PV de réunion (Word + PDF)";
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Rédaction en cours…'; }
+  _aiHistory.push({ role:'user', content: 'Rédige un PV de réunion — Objet : ' + meta.objet + ' | Date : ' + meta.date + ' | Lieu : ' + meta.lieu + ' | Participants : ' + participants.join(', ') });
+  _aiHistory.push({ role:'assistant', content: '⏳ Rédaction du PV en cours…' });
+  aiSaveHistory(); aiRenderMessages();
+
+  const modelInput = document.getElementById('ai-model-input');
+  const model = (modelInput && modelInput.value.trim()) || AI_DEFAULT_MODEL;
+
+  try{
+    const messages = [
+      { role:'system', content: AI_SYSTEM_PROMPT },
+      { role:'user', content: identLines.join('\n') + '\n\n' + instruction }
+    ];
+    const res = await fetch(aiGetUrl() + '/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model: model, messages: messages, stream:false })
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const reply = (data.message && data.message.content) || '';
+    if(!reply) throw new Error('réponse vide');
+
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: reply };
+    aiSaveHistory(); aiRenderMessages();
+
+    await aiExportPVWord(meta, reply);
+    aiExportPVPDF(meta, reply);
+    _aiHistory.push({ role:'assistant', content: '✓ PV de réunion généré et téléchargé en Word et en PDF. Relisez-le avant diffusion : vérifiez que les décisions correspondent bien à ce qui a été dit. Vous pouvez recliquer sur le bouton pour recommencer avec des notes corrigées.' });
+  } catch(e){
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: "⚠️ Impossible de générer le PV. Vérifiez qu'Ollama est installé et lancé, et que le modèle « " + model + " » est bien téléchargé. Détail : " + (e && e.message || '') };
+  }
+  _aiBusy = false;
+  if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
+  aiSaveHistory(); aiRenderMessages();
+}
+
 // Demande l'écriture en lettres d'un montant, soit saisi directement, soit
 // retrouvé via un N° d'article (BPU puis DQE) — le calcul réel est fait par
 // l'outil BPU/DQE (core.wordsWithCurrency), jamais deviné par le modèle.
@@ -10920,6 +11151,7 @@ document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-suivi-btn') aiRequestSuiviSnapshot();
   if(e.target && e.target.id === 'ai-rapport-btn') aiGenerateRapportAvancement();
   if(e.target && e.target.id === 'ai-courrier-btn') aiRequestCourrierOfficiel();
+  if(e.target && e.target.id === 'ai-pv-btn') aiRequestPVReunion();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
