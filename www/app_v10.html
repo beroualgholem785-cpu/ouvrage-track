@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded',function(){ otDecorate(document.get
     // Repère de build affiché au démarrage (toast ci-dessous) pour que l'utilisateur
     // puisse vérifier qu'il a bien la dernière version après une mise à jour.
     // IMPORTANT : mettre à jour cette date à CHAQUE nouvelle livraison (APK/Web/USB).
-    var __OT_BUILD = '2026-11-28';
+    var __OT_BUILD = '2026-11-28b';
     // Message visible dans la fenêtre d'où part le téléchargement (la page principale ou le cadre BPU/DQE, qui la recouvre)
     function say(w, msg, err, ms){
       try{
@@ -185,6 +185,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 <script src="libs/xlsx.full.min.js"></script>
 <script src="libs/xlsx-js-style.bundle.js"></script>
 <script src="libs/exceljs.min.js"></script>
+<script src="libs/pptxgen.bundle.js"></script>
 <style>
 :root{
   --sb:#1c2b45;--sb2:#243659;--sb3:#2d4272;--sb-t:rgba(255,255,255,.06);
@@ -10165,6 +10166,7 @@ function aiBuildUI(){
       <button id="ai-rapport-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📝 Générer le rapport d'avancement périodique (Word + PDF)</button>
       <button id="ai-courrier-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">✉️ Rédiger une correspondance officielle (Word + PDF)</button>
       <button id="ai-pv-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📋 Rédiger un PV de réunion (Word + PDF)</button>
+      <button id="ai-pptx-btn" class="btn-accent" style="font-size:12px;padding:5px 10px">📊 Générer une présentation PowerPoint (avancement de chantier)</button>
     </div>
     <div style="display:flex;gap:8px;padding:10px;border-top:1px solid #eee;background:#fafafa">
       <textarea id="ai-input" rows="2" placeholder="Écrivez votre message ici… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)" style="flex:1;resize:none;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit"></textarea>
@@ -10574,6 +10576,198 @@ async function aiGenerateRapportAvancement(){
     _aiHistory.push({ role:'assistant', content: "✓ Rapport généré et téléchargé en Word et en PDF. Vous pouvez me demander de corriger ou reformuler un passage, puis recliquer sur le bouton pour régénérer les fichiers." });
   } catch(e){
     _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: "⚠️ Impossible de générer le rapport. Vérifiez qu'Ollama est installé et lancé, et que le modèle « " + model + " » est bien téléchargé. Détail : " + (e && e.message || '') };
+  }
+  _aiBusy = false;
+  if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
+  aiSaveHistory(); aiRenderMessages();
+}
+
+// Génère une présentation PowerPoint de suivi de chantier, ENTIÈREMENT à
+// partir des données réelles du projet (mêmes snapshots que les boutons
+// "marché public" / "suivi de chantier"). Aucun appel au modèle IA n'est fait
+// ici : contrairement au rapport ou au courrier, une diapositive de chiffres
+// n'a besoin d'aucune rédaction — on élimine ainsi tout risque qu'un chiffre
+// soit reformulé ou arrondi différemment par le modèle. Utilise PptxGenJS
+// (libs/pptxgen.bundle.js), déjà chargé dans le document.
+function aiGeneratePresentationPPTX(){
+  if(!window.PptxGenJS) throw new Error('Bibliothèque PowerPoint non chargée');
+  if(!CURRENT_PROJECT) throw new Error('Aucun projet ouvert');
+
+  let suivi = { available:false }, marche = { available:false };
+  try { suivi = aiBuildSuiviChantierSnapshot(); } catch(e){}
+  try { marche = aiBuildMarchePublicSnapshot(); } catch(e){}
+  if(!suivi.available && !marche.available) throw new Error('Aucune donnée de suivi ou de marché disponible pour ce projet');
+
+  const devise = (typeof getDevise === 'function') ? getDevise() : 'DA';
+  const f$ = n => (!n||isNaN(n)) ? ('0 ' + devise) : Math.round(n).toLocaleString('fr-FR') + ' ' + devise;
+  const fp = n => (n||0).toFixed(2) + '%';
+  const proj = CURRENT_PROJECT;
+  const dateStr = new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+
+  const C_BLUE = '1B2F8C', C_DARK = '1D2733', C_GRAY = '64748B', C_RED = 'DC2626', C_GREEN = '16A34A', C_ORANGE = 'CA8A04', C_LIGHT = 'EFF2F7';
+  const statutColor = { ok:C_GREEN, avance:C_GREEN, alerte:C_ORANGE, retard:C_RED, arret:C_RED }[suivi.statutDelai] || C_GRAY;
+  const statutLabel = {
+    ok: 'Dans les délais', avance: 'En avance sur le planning', alerte: 'Alerte — proche du seuil de retard',
+    retard: 'EN RETARD', arret: "Chantier à l'arrêt (OS d'arrêt en cours)"
+  }[suivi.statutDelai] || (suivi.statutDelai || '-');
+
+  const p = new PptxGenJS();
+  p.defineLayout({ name:'OT16x9', width:10, height:5.63 });
+  p.layout = 'OT16x9';
+  p.author = 'Ouvrage Track';
+  p.company = proj.entreprise || 'Ouvrage Track';
+  p.title = 'Présentation d\'avancement — ' + (proj.name || '');
+
+  function titleSlide(s, titleTxt, subTxt){
+    s.background = { color:'FFFFFF' };
+    s.addShape('rect', { x:0, y:0, w:10, h:0.9, fill:{ color:C_BLUE } });
+    s.addText(titleTxt, { x:0.4, y:0.15, w:9.2, h:0.6, fontSize:22, bold:true, color:'FFFFFF', fontFace:'Calibri' });
+    if(subTxt) s.addText(subTxt, { x:0.4, y:0.95, w:9.2, h:0.4, fontSize:13, color:C_GRAY, fontFace:'Calibri' });
+  }
+
+  // Diapo 1 — Titre
+  let s1 = p.addSlide();
+  s1.background = { color:C_BLUE };
+  s1.addText("Présentation d'avancement de chantier", { x:0.6, y:1.7, w:8.8, h:1.1, fontSize:30, bold:true, color:'FFFFFF', fontFace:'Calibri', align:'center' });
+  s1.addText(proj.name || '', { x:0.6, y:2.8, w:8.8, h:0.5, fontSize:18, color:'FFFFFF', fontFace:'Calibri', align:'center' });
+  const infoBits = [];
+  if(proj.entreprise) infoBits.push('Entreprise : ' + proj.entreprise);
+  if(proj.moa) infoBits.push('Maître d\'ouvrage : ' + proj.moa);
+  if(proj.numMarche) infoBits.push('N° marché : ' + proj.numMarche);
+  s1.addText(infoBits.join('   |   '), { x:0.6, y:3.4, w:8.8, h:0.4, fontSize:12, color:'DDE3F5', fontFace:'Calibri', align:'center' });
+  s1.addText(dateStr, { x:0.6, y:4.9, w:8.8, h:0.4, fontSize:12, color:'DDE3F5', fontFace:'Calibri', align:'center' });
+
+  // Diapo 2 — Avancement
+  if(suivi.available){
+    let s2 = p.addSlide();
+    titleSlide(s2, 'Avancement physique et délais', 'Statut : ' + statutLabel);
+    s2.addShape('roundRect', { x:0.4, y:1.5, w:2.9, h:1.6, fill:{ color:C_LIGHT }, rectRadius:0.08 });
+    s2.addText(fp(suivi.pctPhysique), { x:0.4, y:1.6, w:2.9, h:0.8, fontSize:32, bold:true, color:C_BLUE, align:'center', fontFace:'Calibri' });
+    s2.addText('Avancement physique réel', { x:0.4, y:2.4, w:2.9, h:0.6, fontSize:11, color:C_DARK, align:'center', fontFace:'Calibri' });
+
+    s2.addShape('roundRect', { x:3.55, y:1.5, w:2.9, h:1.6, fill:{ color:C_LIGHT }, rectRadius:0.08 });
+    s2.addText(fp(suivi.pctTheorique), { x:3.55, y:1.6, w:2.9, h:0.8, fontSize:32, bold:true, color:C_GRAY, align:'center', fontFace:'Calibri' });
+    s2.addText('Avancement théorique (planning)', { x:3.55, y:2.4, w:2.9, h:0.6, fontSize:11, color:C_DARK, align:'center', fontFace:'Calibri' });
+
+    s2.addShape('roundRect', { x:6.7, y:1.5, w:2.9, h:1.6, fill:{ color:C_LIGHT }, rectRadius:0.08 });
+    s2.addText((suivi.retard >= 0 ? '+' : '') + suivi.retard.toFixed(2) + ' pts', { x:6.7, y:1.6, w:2.9, h:0.8, fontSize:28, bold:true, color:statutColor, align:'center', fontFace:'Calibri' });
+    s2.addText('Écart théorique − réel', { x:6.7, y:2.4, w:2.9, h:0.6, fontSize:11, color:C_DARK, align:'center', fontFace:'Calibri' });
+
+    const delaiLines = [];
+    delaiLines.push('Jours écoulés : ' + suivi.joursEcoules + ' / ' + suivi.joursTotaux + ' jours (dont ' + suivi.joursArret + ' j d\'arrêt, ' + suivi.joursProrogation + ' j de prorogation)');
+    if(suivi.dateDebut) delaiLines.push('Début du marché : ' + suivi.dateDebut);
+    if(suivi.dateFinContrat) delaiLines.push('Fin contractuelle initiale : ' + suivi.dateFinContrat);
+    if(suivi.dateFinPrevue) delaiLines.push('Fin prévisionnelle (arrêts + prorogations inclus) : ' + suivi.dateFinPrevue);
+    if(suivi.enArretActuellement) delaiLines.push('⚠ Chantier actuellement À L\'ARRÊT (OS d\'arrêt en cours, non encore repris).');
+    s2.addText(delaiLines.map(l => '• ' + l).join('\n'), { x:0.4, y:3.5, w:9.2, h:1.9, fontSize:13, color:C_DARK, fontFace:'Calibri', lineSpacingMultiple:1.3, valign:'top' });
+  }
+
+  // Diapo 3 — Avancement par lot (table)
+  if(suivi.available && suivi.lots.length){
+    let s3 = p.addSlide();
+    titleSlide(s3, 'Avancement physique par lot');
+    const rows = [[
+      { text:'Lot', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE } } },
+      { text:'Avancement physique', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE }, align:'center' } }
+    ]];
+    suivi.lots.forEach((l, i) => {
+      rows.push([
+        { text:l.nom, options:{ fill:{ color:i%2===0?'FFFFFF':C_LIGHT } } },
+        { text:fp(l.pct), options:{ align:'center', fill:{ color:i%2===0?'FFFFFF':C_LIGHT } } }
+      ]);
+    });
+    s3.addTable(rows, { x:0.4, y:1.5, w:9.2, colW:[6.6,2.6], fontSize:12, fontFace:'Calibri', border:{ type:'solid', color:'CCCCCC', pt:0.5 }, autoPage:true, autoPageCharWeight:0.4 });
+  }
+
+  // Diapo 4 — Situation financière
+  if(marche.available){
+    let s4 = p.addSlide();
+    titleSlide(s4, 'Situation financière du marché', marche.seuilDepasse ? '⚠ Seuil légal TC+TS dépassé' : 'Seuil légal TC+TS respecté');
+    const finRows = [
+      ['Budget initial HT', f$(marche.budgetInitial)],
+      ['Montant des avenants signés', f$(marche.avenantsSignesMontant)],
+      ['Budget actualisé HT', f$(marche.budgetActualise)],
+      ['TC (travaux complémentaires)', f$(marche.tcTotal) + ' (' + fp(marche.pctTC) + ')'],
+      ['TS (travaux supplémentaires)', f$(marche.tsTotal) + ' (' + fp(marche.pctTS) + ')'],
+      ['TD (travaux à déduire)', f$(marche.tdTotal) + ' (' + fp(marche.pctTD) + ')'],
+      ['TC + TS cumulés / seuil légal (' + marche.seuilLegalTCTS + '%)', fp(marche.pctTCTSCumule)]
+    ];
+    const rows = finRows.map((r, i) => ([
+      { text:r[0], options:{ bold:true, fill:{ color:i%2===0?'FFFFFF':C_LIGHT } } },
+      { text:r[1], options:{ align:'right', fill:{ color:i%2===0?'FFFFFF':C_LIGHT }, color: (i===6 && marche.seuilDepasse) ? C_RED : C_DARK, bold:(i===6) } }
+    ]));
+    s4.addTable(rows, { x:0.4, y:1.5, w:9.2, colW:[5.8,3.4], fontSize:12, fontFace:'Calibri', border:{ type:'solid', color:'CCCCCC', pt:0.5 } });
+  }
+
+  // Diapo 5 — Avenants
+  if(marche.available && marche.avenants.length){
+    let s5 = p.addSlide();
+    titleSlide(s5, 'Avenants (' + marche.nbAvenants + ')');
+    const rows = [[
+      { text:'N°', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE } } },
+      { text:'Objet', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE } } },
+      { text:'Montant', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE }, align:'right' } },
+      { text:'Statut', options:{ bold:true, color:'FFFFFF', fill:{ color:C_BLUE } } }
+    ]];
+    marche.avenants.forEach((a, i) => {
+      const bg = i%2===0?'FFFFFF':C_LIGHT;
+      rows.push([
+        { text:a.numero, options:{ fill:{ color:bg } } },
+        { text:a.objet, options:{ fill:{ color:bg } } },
+        { text:f$(a.montant), options:{ align:'right', fill:{ color:bg } } },
+        { text:a.statut, options:{ fill:{ color:bg } } }
+      ]);
+    });
+    s5.addTable(rows, { x:0.3, y:1.5, w:9.4, colW:[1.1,4.6,2.0,1.7], fontSize:11, fontFace:'Calibri', border:{ type:'solid', color:'CCCCCC', pt:0.5 }, autoPage:true, autoPageCharWeight:0.4 });
+  }
+
+  // Diapo 6 — Alertes
+  if(suivi.available && (suivi.alertesBudgetLot.length || suivi.alertesQuantite.length)){
+    let s6 = p.addSlide();
+    titleSlide(s6, 'Alertes et points de vigilance');
+    const lines = [];
+    if(suivi.alertesBudgetLot.length){
+      lines.push({ text:'Lots en alerte budgétaire (≥ ' + suivi.seuilAlerteBudgetLot + '% du budget du lot) :', options:{ bold:true, color:C_ORANGE, breakLine:true } });
+      suivi.alertesBudgetLot.forEach(a => {
+        lines.push({ text:'• ' + a.lot + ' : ' + fp(a.pct) + ' consommé (' + f$(a.real) + ' / ' + f$(a.budget) + ')', options:{ breakLine:true } });
+      });
+      lines.push({ text:' ', options:{ breakLine:true } });
+    }
+    if(suivi.alertesQuantite.length){
+      lines.push({ text:'Articles en dépassement de quantité, non couverts par un TS :', options:{ bold:true, color:C_RED, breakLine:true } });
+      suivi.alertesQuantite.forEach(a => {
+        lines.push({ text:'• ' + a.article + ' (lot ' + a.lot + ') : ' + a.qteRealisee + ' réalisé pour ' + a.qteMarche + ' prévu, dépassement ' + a.depassement + ' → ' + f$(a.montantTS), options:{ breakLine:true } });
+      });
+    }
+    s6.addText(lines, { x:0.4, y:1.5, w:9.2, h:3.6, fontSize:13, fontFace:'Calibri', valign:'top', lineSpacingMultiple:1.25 });
+  }
+
+  const slug = (proj.name || 'projet').slice(0,40).replace(/[^\p{L}\p{N}\- ]/gu,'').trim().replace(/\s+/g,'_') || 'projet';
+  return p.writeFile({ fileName: 'Presentation_Avancement_' + slug + '_' + dateStr.replace(/\s+/g,'-') + '.pptx' });
+}
+
+// Lance la génération de la présentation PowerPoint depuis le bouton dédié,
+// avec gestion d'erreur et message dans le chat (toujours à partir des
+// données réelles du projet — aucun appel au modèle IA).
+async function aiRequestPresentationPPTX(){
+  if(_aiBusy) return;
+  if(!CURRENT_PROJECT){
+    _aiHistory.push({ role:'assistant', content: "Aucun projet n'est ouvert pour l'instant : ouvrez un projet, puis revenez ici et réessayez." });
+    aiSaveHistory(); aiRenderMessages();
+    return;
+  }
+  _aiBusy = true;
+  const btn = document.getElementById('ai-pptx-btn');
+  const btnLabel = '📊 Générer une présentation PowerPoint (avancement de chantier)';
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Génération en cours…'; }
+  _aiHistory.push({ role:'user', content: 'Génère la présentation PowerPoint du suivi de chantier.' });
+  _aiHistory.push({ role:'assistant', content: '⏳ Génération de la présentation en cours, à partir des données réelles du projet…' });
+  aiSaveHistory(); aiRenderMessages();
+  try{
+    await aiGeneratePresentationPPTX();
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: '✓ Présentation PowerPoint générée et téléchargée. Toutes les données affichées (avancement, délais, finances, avenants, alertes) viennent directement des calculs réels d\'Ouvrage Track — aucune n\'a été rédigée ou recalculée par le modèle IA.' };
+  } catch(e){
+    _aiHistory[_aiHistory.length - 1] = { role:'assistant', content: "⚠️ Impossible de générer la présentation. Détail : " + (e && e.message || '') };
   }
   _aiBusy = false;
   if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
@@ -11152,6 +11346,7 @@ document.addEventListener('click', function(e){
   if(e.target && e.target.id === 'ai-rapport-btn') aiGenerateRapportAvancement();
   if(e.target && e.target.id === 'ai-courrier-btn') aiRequestCourrierOfficiel();
   if(e.target && e.target.id === 'ai-pv-btn') aiRequestPVReunion();
+  if(e.target && e.target.id === 'ai-pptx-btn') aiRequestPresentationPPTX();
   if(e.target && e.target.id === 'ai-clear-btn'){
     if(confirm('Effacer toute la conversation avec Ouvrage Track AI ?')){
       _aiHistory = [];
